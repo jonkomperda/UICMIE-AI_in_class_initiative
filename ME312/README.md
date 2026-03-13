@@ -1,11 +1,14 @@
 # HVAC PID / Neural Network Control Demo
 ### *by Jon Komperda, PhD*
 
-`hvac_pid_nn_control_demo.m` is an interactive MATLAB teaching app for introductory HVAC temperature control. The first version is intentionally simple: it uses a cooling-only room model and an on/off thermostat controller, while the file and app framing leave room for later PID and neural-network control extensions.
+`hvac_pid_nn_control_demo.m` is an interactive MATLAB teaching app for introductory HVAC temperature control. The current version compares two controllers on the same cooling-only room model:
+
+- a basic on/off thermostat with hysteresis
+- a cooling-only PID controller with tunable `Kp`, `Ki`, and `Kd`
+
+The app still keeps the broader `pid_nn` framing because the long-term goal is to compare classical control ideas with future neural-network-based control extensions.
 
 ## Running the demo
-
-In MATLAB:
 
 Run the file from the `ME312` folder or add that folder to your MATLAB path first.
 
@@ -14,15 +17,15 @@ Run the file from the `ME312` folder or add that folder to your MATLAB path firs
 At a high level, the workflow is:
 
 1. Load a built-in ambient temperature profile or click points to define a custom profile over a 24-hour window.
-2. Set the thermostat and room-model parameters.
+2. Set the room-model, basic thermostat, and PID parameters.
 3. Run the HVAC simulation.
-4. Compare the ambient disturbance, indoor temperature response, setpoint, and AC on/off history.
+4. Compare the thermostat and PID temperature responses, controller effort, and summary metrics.
 
-This makes the app useful for discussing how a simple thermostat responds to changing outdoor conditions and why more advanced control strategies may be desirable.
+This makes the app useful for discussing how a simple hysteresis controller differs from a continuous PID controller under the same outdoor disturbance.
 
-## Current v1 scope
+## Current scope
 
-The first version includes:
+The current version includes:
 
 - three built-in ambient profiles:
   - `Summer Warm-Up`
@@ -30,24 +33,29 @@ The first version includes:
   - `Day-Night Cycle`
 - manual point-based ambient profile creation by clicking in the left plot
 - a simple first-order cooling-room model
-- an on/off thermostat with hysteresis (deadband)
-- a right-side result plot showing:
-  - ambient temperature
-  - indoor temperature
+- a shared setpoint used by both controllers
+- a basic thermostat with hysteresis (deadband)
+- a PID controller with two selectable actuation modes:
+  - `Duty Cycle`
+    continuous PWM-like cooling between `0` and `1`
+  - `Two Stage`
+    staged cooling levels at `0`, `0.5`, and `1`
+- a right-side comparison plot showing:
+  - outdoor temperature
+  - thermostat indoor temperature
+  - PID indoor temperature
   - setpoint
-  - AC on/off state
-
-The app name includes `pid_nn` because it is meant to grow into a larger control-comparison demo, but v1 only runs the thermostat-style on/off control mode.
+  - thermostat control output
+  - PID cooling level
+- an optional 3-second animation of the comparison plot
+- controller enable checkboxes so the thermostat and PID can be run independently
+- a run-statistics summary inside the control panel comparing controller runtime, duty cycle, and average indoor temperature
 
 ## Inputs you can change
 
-The control panel exposes a small set of teaching-friendly parameters:
+The control panel is divided into three sections:
 
-- `Setpoint (degF)`
-  Desired indoor temperature.
-
-- `Deadband (degF)`
-  Thermostat hysteresis width. This prevents rapid switching near the setpoint.
+### Room Model
 
 - `Initial Indoor (degF)`
   Starting room temperature at the beginning of the day.
@@ -56,7 +64,35 @@ The control panel exposes a small set of teaching-friendly parameters:
   A simple thermal-response coefficient that pulls the indoor temperature toward the ambient temperature.
 
 - `AC Cooling (degF/hr)`
-  The cooling strength applied when the air conditioner is on.
+  The maximum cooling strength applied when the controller command is fully on.
+
+### Basic Thermostat
+
+- `Enable`
+  Turns the thermostat comparison path on or off.
+
+- `Setpoint (degF)`
+  Shared indoor target temperature for both controllers.
+
+- `Deadband (degF)`
+  Thermostat hysteresis width. Larger values reduce switching chatter.
+
+### PID Controls
+
+- `Enable`
+  Turns the PID comparison path on or off.
+
+- `Kp`
+  Proportional gain.
+
+- `Ki`
+  Integral gain.
+
+- `Kd`
+  Derivative gain.
+
+- `PID Mode`
+  Selects either continuous duty-cycle cooling or two-stage cooling.
 
 ## Simple thermal model
 
@@ -64,39 +100,53 @@ The room is modeled as a single thermal state:
 
 - ambient temperature acts as an external disturbance
 - the room temperature drifts toward ambient temperature at a user-controlled rate
-- the AC removes heat at a fixed rate whenever the controller commands it on
+- controller output removes heat at a fixed maximum rate scaled by the command signal
 
 This is not intended to be a high-fidelity building model. It is an educational example that keeps the dynamics easy to explain and modify.
 
-## On/off control logic
+## Controllers in the app
 
-The current controller is a thermostat with hysteresis:
+### Basic thermostat
 
-- AC turns on when the indoor temperature rises above `setpoint + deadband/2`
-- AC turns off when the indoor temperature falls below `setpoint - deadband/2`
-- inside that band, the controller keeps the previous on/off state
+The thermostat uses hysteresis:
 
-This makes it easy to show how thermostat deadband affects comfort and switching behavior.
+- AC turns on when indoor temperature rises above `setpoint + deadband/2`
+- AC turns off when indoor temperature falls below `setpoint - deadband/2`
+- inside that band, it keeps the previous on/off state
+
+### PID controller
+
+The PID branch uses:
+
+- proportional, integral, and derivative error terms
+- a selectable cooling actuator mode:
+  - `Duty Cycle`
+    applies continuous cooling between `0` and `1`
+  - `Two Stage`
+    maps the PID demand to stepped cooling levels at `0`, `0.5`, and `1` using lower and higher demand bands so stage 1 engages earlier and stage 2 engages only at stronger cooling demand
+
+This creates a classroom-friendly comparison between rule-based switching and continuous feedback control.
 
 ## Future plans
 
-This demo is designed to grow in stages. Planned future directions include:
+This demo is designed to grow further. Planned future directions include:
 
-- `PID control mode`
-  Add a classical PID controller with tunable `Kp`, `Ki`, and `Kd` gains so students can compare thermostat control with proportional-integral-derivative control.
-
-- `Controller comparison`
-  Allow side-by-side comparisons between on/off control and PID control for the same ambient profile and setpoint.
+- `Expose two-stage PID thresholds`
+  The current two-stage PID thresholds are hardcoded in the MATLAB file and should be exposed to the user in a later version so they can be tuned directly from the app.
+  The current hardcoded values are:
+  - `stage1OnThreshold = 0.12`
+  - `stage1OffThreshold = 0.05`
+  - `stage2OnThreshold = 0.60`
+  - `stage2OffThreshold = 0.40`
 
 - `Neural-network extension`
-  Add a neural-network-based temperature-control component, such as:
-  - a learned room-response predictor
-  - a data-driven controller or adaptive supervisory controller
-  - a comparison between classical model-based control and AI-assisted control
+  Add a neural-network-based temperature-control component, such as a learned room-response predictor or a data-driven supervisory controller.
 
-- `Teaching comparison workflow`
-  Use the same HVAC example to discuss the tradeoffs among:
+- `Classical vs AI comparison`
+  Compare thermostat control, PID control, and neural-network-assisted control on the same HVAC example.
+
+- `Expanded teaching workflow`
+  Use the same app to discuss the tradeoffs among:
   - simple rule-based control
   - classical feedback control
   - data-driven / AI-based control
-
