@@ -1,5 +1,5 @@
 function fourbar_ga_app
-% FOURBAR_GA_APP Interactive four-bar path synthesis with a custom GA.
+% Interactive four-bar path synthesis with a custom GA.
 % Run this file, click points on the target-path axes, tune the GA values,
 % and press "Run Genetic Algorithm" to synthesize and animate a linkage.
 %
@@ -435,7 +435,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             "Parent", state.controlsPanel, ...
             "Style", "pushbutton", ...
             "Units", "normalized", ...
-            "Position", [0.05 0.102 0.56 0.042], ...
+            "Position", [0.05 0.102 0.43 0.042], ...
             "String", "Run Genetic Algorithm", ...
             "FontWeight", "bold", ...
             "ForegroundColor", [0 0 0], ...
@@ -447,13 +447,25 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             "Parent", state.controlsPanel, ...
             "Style", "pushbutton", ...
             "Units", "normalized", ...
-            "Position", [0.64 0.102 0.26 0.042], ...
+            "Position", [0.51 0.102 0.18 0.042], ...
             "String", "Stop", ...
             "Enable", "off", ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", [0.8 0.8 0.8], ...
             "TooltipString", "Request a stop after the current generation finishes.", ...
             "Callback", @onStopRun);
+
+        state.controls.saveGifButton = uicontrol( ...
+            "Parent", state.controlsPanel, ...
+            "Style", "pushbutton", ...
+            "Units", "normalized", ...
+            "Position", [0.72 0.102 0.20 0.042], ...
+            "String", "Save GIF", ...
+            "Enable", "off", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", [0.8 0.8 0.8], ...
+            "TooltipString", "Save the final mechanism animation as a GIF using the current animation cycle and frame pause settings.", ...
+            "Callback", @onSaveGif);
 
         state.controls.statusLabel = uicontrol( ...
             "Parent", state.controlsPanel, ...
@@ -489,6 +501,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
         refreshTargetData();
         refreshPlots();
+        updateSaveGifButtonState();
     end
 
     % Small helper used throughout the control panel to place a text label
@@ -1215,6 +1228,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         state.bestHistory = [];
         refreshPlots();
         refreshHistoryPlot();
+        updateSaveGifButtonState();
         logMessage("Cleared all path points.");
     end
 
@@ -1249,6 +1263,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         state.bestHistory = [];
         refreshPlots();
         refreshHistoryPlot();
+        updateSaveGifButtonState();
         logMessage(sprintf("Mechanism mode set to %s.", mechanismModeToLabel(getSelectedMechanismMode())));
     end
 
@@ -1344,6 +1359,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         state.bestHistory = [];
         refreshPlots();
         refreshHistoryPlot();
+        updateSaveGifButtonState();
         logMessage(sprintf("Loaded %s example path.", exampleSpec.name));
     end
 
@@ -1604,6 +1620,87 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         end
     end
 
+    % Save the current best final animation to a GIF file.
+    function onSaveGif(~, ~)
+        if state.isRunning
+            logMessage("Wait for the active run to finish before saving a GIF.");
+            return;
+        end
+
+        if isempty(state.bestResult) || ~isfield(state.bestResult, "path")
+            errordlg("Run the optimizer first so there is a final animation to export.", "No Animation Available");
+            return;
+        end
+
+        options = readGaOptions();
+        if isempty(options)
+            return;
+        end
+
+        validMask = ~any(isnan(state.bestResult.path), 2);
+        validFrames = find(validMask);
+        if isempty(validFrames)
+            errordlg("The current best mechanism does not have any valid frames to export.", "No Valid Frames");
+            return;
+        end
+
+        [fileName, filePath] = uiputfile({"*.gif", "GIF Files (*.gif)"}, "Save Final Animation GIF", "linkage_animation.gif");
+        if isequal(fileName, 0) || isequal(filePath, 0)
+            logMessage("GIF export canceled.");
+            return;
+        end
+
+        outputPath = fullfile(filePath, fileName);
+        if numel(outputPath) < 4 || ~strcmpi(outputPath(end-3:end), ".gif")
+            outputPath = [outputPath, ".gif"];
+        end
+
+        pauseTime = max(0, options.framePause);
+        cycleCount = max(1, options.animationCycles);
+        frameWritten = false;
+
+        try
+            logMessage(sprintf("Saving GIF to %s", outputPath));
+            setStatus("saving gif");
+            for cycle = 1:cycleCount
+                for idx = 1:numel(validFrames)
+                    if state.stopRequested
+                        break;
+                    end
+                    frameIndex = validFrames(idx);
+                    renderFinalAnimationFrame(state.linkageAxes, state.bestResult, validFrames, frameIndex, cycle, cycleCount, idx);
+                    drawnow;
+                    frameImage = getframe(state.linkageAxes);
+                    [rgbImage, ~] = frame2im(frameImage);
+                    [indexedImage, colorMap] = rgb2ind(rgbImage, 256);
+                    if ~frameWritten
+                        imwrite(indexedImage, colorMap, outputPath, "gif", "DelayTime", pauseTime);
+                        frameWritten = true;
+                    else
+                        imwrite(indexedImage, colorMap, outputPath, "gif", "WriteMode", "append", "DelayTime", pauseTime);
+                    end
+                end
+                if state.stopRequested
+                    break;
+                end
+            end
+
+            if frameWritten
+                logMessage(sprintf("Saved final animation GIF with %d cycle(s).", cycleCount));
+            else
+                logMessage("GIF export stopped before any frames were written.");
+            end
+        catch err
+            logMessage(sprintf("GIF export failed: %s", err.message));
+            errordlg(err.message, "GIF Export Failed");
+        end
+
+        state.stopRequested = false;
+        refreshLinkagePlot();
+        setStatus("idle");
+        updateSaveGifButtonState();
+    end
+
     % Read all editable GUI settings into a single options structure.
     %
     % This is the main place to look if you want to know which variables are
@@ -1657,6 +1754,18 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
         if options.targetRmse <= 0
             errordlg("Target RMSE must be greater than 0.", "Invalid Settings");
+            options = [];
+            return;
+        end
+
+        if options.animationCycles < 1
+            errordlg("Animation cycles must be at least 1.", "Invalid Settings");
+            options = [];
+            return;
+        end
+
+        if options.framePause < 0
+            errordlg("Frame pause must be nonnegative.", "Invalid Settings");
             options = [];
             return;
         end
@@ -2911,9 +3020,12 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
     % Draw one frame of the current mechanism geometry for preview or final
     % animation, depending on the selected mechanism family.
-    function drawMechanismFrame(result, frameIndex, emphasize)
+    function drawMechanismFrame(result, frameIndex, emphasize, axHandle)
         if nargin < 3
             emphasize = false;
+        end
+        if nargin < 4 || isempty(axHandle)
+            axHandle = state.linkageAxes;
         end
 
         if emphasize
@@ -2942,12 +3054,12 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                 end
                 traceBase = (1 - traceBlend) * B + traceBlend * C;
 
-                plot(state.linkageAxes, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
-                plot(state.linkageAxes, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
-                plot(state.linkageAxes, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
-                plot(state.linkageAxes, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
-                plot(state.linkageAxes, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.65 0.4 0.3], "LineWidth", 1.1, "DisplayName", "Tracing point offset");
-                scatter(state.linkageAxes, [A(1), B(1), C(1), D(1)], [A(2), B(2), C(2), D(2)], pointSize, ...
+                plot(axHandle, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
+                plot(axHandle, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
+                plot(axHandle, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
+                plot(axHandle, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
+                plot(axHandle, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.65 0.4 0.3], "LineWidth", 1.1, "DisplayName", "Tracing point offset");
+                scatter(axHandle, [A(1), B(1), C(1), D(1)], [A(2), B(2), C(2), D(2)], pointSize, ...
                     "filled", "MarkerFaceColor", [0.16 0.16 0.16], "MarkerEdgeColor", "white", "DisplayName", "Joints");
             case {'fivebar', 'advanced_fivebar'}
                 A = result.A(frameIndex, :);
@@ -2960,18 +3072,18 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                     return;
                 end
 
-                plot(state.linkageAxes, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
-                plot(state.linkageAxes, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Left crank");
-                plot(state.linkageAxes, [D(1), C(1)], [D(2), C(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Right crank");
-                plot(state.linkageAxes, [B(1), E(1)], [B(2), E(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Left distal");
-                plot(state.linkageAxes, [C(1), E(1)], [C(2), E(2)], "-", "Color", [0.2 0.55 0.8], "LineWidth", linkWidth, "DisplayName", "Right distal");
+                plot(axHandle, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
+                plot(axHandle, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Left crank");
+                plot(axHandle, [D(1), C(1)], [D(2), C(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Right crank");
+                plot(axHandle, [B(1), E(1)], [B(2), E(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Left distal");
+                plot(axHandle, [C(1), E(1)], [C(2), E(2)], "-", "Color", [0.2 0.55 0.8], "LineWidth", linkWidth, "DisplayName", "Right distal");
                 if strcmp(result.mechanismMode, 'advanced_fivebar')
                     SL = result.sliderB(frameIndex, :);
                     SR = result.sliderC(frameIndex, :);
-                    plot(state.linkageAxes, [E(1), SL(1)], [E(2), SL(2)], ":", "Color", [0.95 0.65 0.1], "LineWidth", 1.0, "DisplayName", "Left slider offset");
-                    plot(state.linkageAxes, [E(1), SR(1)], [E(2), SR(2)], ":", "Color", [0.2 0.55 0.8], "LineWidth", 1.0, "DisplayName", "Right slider offset");
-                    plot(state.linkageAxes, [SL(1), SR(1)], [SL(2), SR(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
-                    scatter(state.linkageAxes, [SL(1), SR(1)], [SL(2), SR(2)], pointSize - 12, ...
+                    plot(axHandle, [E(1), SL(1)], [E(2), SL(2)], ":", "Color", [0.95 0.65 0.1], "LineWidth", 1.0, "DisplayName", "Left slider offset");
+                    plot(axHandle, [E(1), SR(1)], [E(2), SR(2)], ":", "Color", [0.2 0.55 0.8], "LineWidth", 1.0, "DisplayName", "Right slider offset");
+                    plot(axHandle, [SL(1), SR(1)], [SL(2), SR(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
+                    scatter(axHandle, [SL(1), SR(1)], [SL(2), SR(2)], pointSize - 12, ...
                         "filled", "MarkerFaceColor", [0.95 0.82 0.18], "MarkerEdgeColor", [0.15 0.15 0.15], "DisplayName", "Sliders");
                 else
                     theta = getResultAngleAtFrame(result, frameIndex, "leftInputAngles");
@@ -2981,9 +3093,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                     end
                     midpoint = 0.5 * (B + C);
                     traceBase = (1 - traceBlend) * E + traceBlend * midpoint;
-                    plot(state.linkageAxes, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.65 0.4 0.3], "LineWidth", 1.2, "DisplayName", "Trace offset");
+                    plot(axHandle, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.65 0.4 0.3], "LineWidth", 1.2, "DisplayName", "Trace offset");
                 end
-                scatter(state.linkageAxes, [A(1), B(1), C(1), D(1), E(1)], [A(2), B(2), C(2), D(2), E(2)], pointSize, ...
+                scatter(axHandle, [A(1), B(1), C(1), D(1), E(1)], [A(2), B(2), C(2), D(2), E(2)], pointSize, ...
                     "filled", "MarkerFaceColor", [0.16 0.16 0.16], "MarkerEdgeColor", "white", "DisplayName", "Joints");
             case {'sixbar', 'advanced_sixbar'}
                 A = result.A(frameIndex, :);
@@ -2998,20 +3110,20 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                     return;
                 end
 
-                plot(state.linkageAxes, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
-                plot(state.linkageAxes, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
-                plot(state.linkageAxes, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
-                plot(state.linkageAxes, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
-                plot(state.linkageAxes, [B(1), J(1), C(1)], [B(2), J(2), C(2)], "--", "Color", [0.85 0.72 0.35], "LineWidth", 1.0, "DisplayName", "Coupler point");
-                plot(state.linkageAxes, [J(1), E(1)], [J(2), E(2)], "-", "Color", [0.2 0.55 0.8], "LineWidth", linkWidth, "DisplayName", "Aux coupler");
-                plot(state.linkageAxes, [F(1), E(1)], [F(2), E(2)], "-", "Color", [0.8 0.35 0.2], "LineWidth", linkWidth, "DisplayName", "Aux rocker");
+                plot(axHandle, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
+                plot(axHandle, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
+                plot(axHandle, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
+                plot(axHandle, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
+                plot(axHandle, [B(1), J(1), C(1)], [B(2), J(2), C(2)], "--", "Color", [0.85 0.72 0.35], "LineWidth", 1.0, "DisplayName", "Coupler point");
+                plot(axHandle, [J(1), E(1)], [J(2), E(2)], "-", "Color", [0.2 0.55 0.8], "LineWidth", linkWidth, "DisplayName", "Aux coupler");
+                plot(axHandle, [F(1), E(1)], [F(2), E(2)], "-", "Color", [0.8 0.35 0.2], "LineWidth", linkWidth, "DisplayName", "Aux rocker");
                 if strcmp(result.mechanismMode, 'advanced_sixbar')
                     SJ = result.sliderB(frameIndex, :);
                     SF = result.sliderC(frameIndex, :);
-                    plot(state.linkageAxes, [J(1), SJ(1)], [J(2), SJ(2)], ":", "Color", [0.2 0.55 0.8], "LineWidth", 1.0, "DisplayName", "J-slider offset");
-                    plot(state.linkageAxes, [F(1), SF(1)], [F(2), SF(2)], ":", "Color", [0.8 0.35 0.2], "LineWidth", 1.0, "DisplayName", "F-slider offset");
-                    plot(state.linkageAxes, [SJ(1), SF(1)], [SJ(2), SF(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
-                    scatter(state.linkageAxes, [SJ(1), SF(1)], [SJ(2), SF(2)], pointSize - 12, ...
+                    plot(axHandle, [J(1), SJ(1)], [J(2), SJ(2)], ":", "Color", [0.2 0.55 0.8], "LineWidth", 1.0, "DisplayName", "J-slider offset");
+                    plot(axHandle, [F(1), SF(1)], [F(2), SF(2)], ":", "Color", [0.8 0.35 0.2], "LineWidth", 1.0, "DisplayName", "F-slider offset");
+                    plot(axHandle, [SJ(1), SF(1)], [SJ(2), SF(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
+                    scatter(axHandle, [SJ(1), SF(1)], [SJ(2), SF(2)], pointSize - 12, ...
                         "filled", "MarkerFaceColor", [0.95 0.82 0.18], "MarkerEdgeColor", [0.15 0.15 0.15], "DisplayName", "Sliders");
                 else
                     theta = getResultAngleAtFrame(result, frameIndex, "inputAngles");
@@ -3020,9 +3132,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                         traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
                     end
                     traceBase = (1 - traceBlend) * J + traceBlend * E;
-                    plot(state.linkageAxes, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.6 0.5 0.35], "LineWidth", 1.1, "DisplayName", "Trace offset");
+                    plot(axHandle, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", "Color", [0.6 0.5 0.35], "LineWidth", 1.1, "DisplayName", "Trace offset");
                 end
-                scatter(state.linkageAxes, [A(1), B(1), C(1), D(1), E(1), F(1), J(1)], [A(2), B(2), C(2), D(2), E(2), F(2), J(2)], pointSize, ...
+                scatter(axHandle, [A(1), B(1), C(1), D(1), E(1), F(1), J(1)], [A(2), B(2), C(2), D(2), E(2), F(2), J(2)], pointSize, ...
                     "filled", "MarkerFaceColor", [0.16 0.16 0.16], "MarkerEdgeColor", "white", "DisplayName", "Joints");
             otherwise
                 A = result.A(frameIndex, :);
@@ -3048,15 +3160,15 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                 railB = [B - result.params.sliderRailHalfLengthB * railDirB; B + result.params.sliderRailHalfLengthB * railDirB];
                 railC = [C - result.params.sliderRailHalfLengthC * railDirC; C + result.params.sliderRailHalfLengthC * railDirC];
 
-                plot(state.linkageAxes, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
-                plot(state.linkageAxes, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
-                plot(state.linkageAxes, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
-                plot(state.linkageAxes, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
-                plot(state.linkageAxes, railB(:, 1), railB(:, 2), "--", "Color", [0.1 0.55 0.2], "LineWidth", 1.2, "DisplayName", "Slider rail B");
-                plot(state.linkageAxes, railC(:, 1), railC(:, 2), "--", "Color", [0.45 0.2 0.7], "LineWidth", 1.2, "DisplayName", "Slider rail C");
-                plot(state.linkageAxes, [SB(1), SC(1)], [SB(2), SC(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
-                plot(state.linkageAxes, [B(1), SB(1)], [B(2), SB(2)], ":", "Color", [0.1 0.55 0.2], "LineWidth", 1.0, "DisplayName", "Slider offset B");
-                plot(state.linkageAxes, [C(1), SC(1)], [C(2), SC(2)], ":", "Color", [0.45 0.2 0.7], "LineWidth", 1.0, "DisplayName", "Slider offset C");
+                plot(axHandle, [A(1), B(1)], [A(2), B(2)], "-", "Color", [0.1 0.55 0.2], "LineWidth", linkWidth, "DisplayName", "Crank");
+                plot(axHandle, [B(1), C(1)], [B(2), C(2)], "-", "Color", [0.95 0.65 0.1], "LineWidth", linkWidth, "DisplayName", "Coupler");
+                plot(axHandle, [C(1), D(1)], [C(2), D(2)], "-", "Color", [0.45 0.2 0.7], "LineWidth", linkWidth, "DisplayName", "Rocker");
+                plot(axHandle, [A(1), D(1)], [A(2), D(2)], "-", "Color", [0.2 0.2 0.2], "LineWidth", linkWidth, "DisplayName", "Ground");
+                plot(axHandle, railB(:, 1), railB(:, 2), "--", "Color", [0.1 0.55 0.2], "LineWidth", 1.2, "DisplayName", "Slider rail B");
+                plot(axHandle, railC(:, 1), railC(:, 2), "--", "Color", [0.45 0.2 0.7], "LineWidth", 1.2, "DisplayName", "Slider rail C");
+                plot(axHandle, [SB(1), SC(1)], [SB(2), SC(2)], "-", "Color", [0.65 0.4 0.3], "LineWidth", 1.6, "DisplayName", "Slider connector");
+                plot(axHandle, [B(1), SB(1)], [B(2), SB(2)], ":", "Color", [0.1 0.55 0.2], "LineWidth", 1.0, "DisplayName", "Slider offset B");
+                plot(axHandle, [C(1), SC(1)], [C(2), SC(2)], ":", "Color", [0.45 0.2 0.7], "LineWidth", 1.0, "DisplayName", "Slider offset C");
                 if ~strcmp(result.mechanismMode, 'advanced_fourbar')
                     theta = getResultAngleAtFrame(result, frameIndex, "inputAngles");
                     traceBlend = result.params.traceBlend;
@@ -3064,24 +3176,46 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                         traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
                     end
                     traceBase = (1 - traceBlend) * SB + traceBlend * SC;
-                    plot(state.linkageAxes, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", ...
+                    plot(axHandle, [traceBase(1), P(1)], [traceBase(2), P(2)], ":", ...
                         "Color", [0.65 0.4 0.3], "LineWidth", 1.1, "DisplayName", "Trace offset");
                 end
-                scatter(state.linkageAxes, [A(1), B(1), C(1), D(1)], [A(2), B(2), C(2), D(2)], pointSize, ...
+                scatter(axHandle, [A(1), B(1), C(1), D(1)], [A(2), B(2), C(2), D(2)], pointSize, ...
                     "filled", "MarkerFaceColor", [0.16 0.16 0.16], "MarkerEdgeColor", "white", "DisplayName", "Joints");
-                scatter(state.linkageAxes, [SB(1), SC(1)], [SB(2), SC(2)], pointSize - 10, ...
+                scatter(axHandle, [SB(1), SC(1)], [SB(2), SC(2)], pointSize - 10, ...
                     "filled", "MarkerFaceColor", [0.95 0.82 0.18], "MarkerEdgeColor", [0.15 0.15 0.15], "DisplayName", "Sliders");
                 if strcmp(result.mechanismMode, 'advanced_fourbar')
                     bridgePoint = result.E(frameIndex, :);
                     if ~any(isnan(bridgePoint))
-                        scatter(state.linkageAxes, bridgePoint(1), bridgePoint(2), pointSize - 18, ...
+                        scatter(axHandle, bridgePoint(1), bridgePoint(2), pointSize - 18, ...
                             "filled", "MarkerFaceColor", [0.25 0.7 0.9], "MarkerEdgeColor", "white", "DisplayName", "Bridge point");
                     end
                 end
         end
 
-        scatter(state.linkageAxes, P(1), P(2), pointSize + 10, "filled", ...
+        scatter(axHandle, P(1), P(2), pointSize + 10, "filled", ...
             "MarkerFaceColor", [0.85 0.1 0.1], "MarkerEdgeColor", "white", "DisplayName", "Tracing point");
+    end
+
+    % Draw the complete final-animation view on the requested axes.
+    function renderFinalAnimationFrame(axHandle, result, validFrames, frameIndex, cycle, cycleCount, displayIndex)
+        cla(axHandle);
+        hold(axHandle, "on");
+        plot(axHandle, state.targetPoints(:, 1), state.targetPoints(:, 2), "-", ...
+            "Color", [0.75 0.82 0.94], "LineWidth", 2.0, "DisplayName", "Target");
+        plot(axHandle, result.path(validFrames, 1), result.path(validFrames, 2), "-", ...
+            "Color", [0.92 0.38 0.15], "LineWidth", 2.1, "DisplayName", "Synthesized path");
+        drawMechanismFrame(result, frameIndex, true, axHandle);
+        title(axHandle, sprintf("%s Final Animation | cycle %d / %d | frame %d / %d", ...
+            mechanismModeToLabel(result.mechanismMode), cycle, cycleCount, displayIndex, numel(validFrames)));
+        axis(axHandle, "equal");
+        grid(axHandle, "on");
+        applyAxesView(axHandle, collectVisiblePoints(result), "linkage");
+        if ~isempty(findobj(axHandle, "-property", "DisplayName"))
+            legend(axHandle, "Location", "bestoutside");
+        else
+            legend(axHandle, "off");
+        end
+        hold(axHandle, "off");
     end
 
     % Gather points that should influence automatic axis fitting.
@@ -3252,24 +3386,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                     break;
                 end
                 frameIndex = validFrames(idx);
-                cla(state.linkageAxes);
-                hold(state.linkageAxes, "on");
-                plot(state.linkageAxes, state.targetPoints(:, 1), state.targetPoints(:, 2), "-", ...
-                    "Color", [0.75 0.82 0.94], "LineWidth", 2.0, "DisplayName", "Target");
-                plot(state.linkageAxes, result.path(validFrames, 1), result.path(validFrames, 2), "-", ...
-                    "Color", [0.92 0.38 0.15], "LineWidth", 2.1, "DisplayName", "Synthesized path");
-                drawMechanismFrame(result, frameIndex, true);
-                title(state.linkageAxes, sprintf("%s Final Animation | cycle %d / %d | frame %d / %d", ...
-                    mechanismModeToLabel(result.mechanismMode), cycle, cycleCount, idx, numel(validFrames)));
-                axis(state.linkageAxes, "equal");
-                grid(state.linkageAxes, "on");
-                applyAxesView(state.linkageAxes, collectVisiblePoints(result), "linkage");
-                if ~isempty(findobj(state.linkageAxes, "-property", "DisplayName"))
-                    legend(state.linkageAxes, "Location", "bestoutside");
-                else
-                    legend(state.linkageAxes, "off");
-                end
-                hold(state.linkageAxes, "off");
+                renderFinalAnimationFrame(state.linkageAxes, result, validFrames, frameIndex, cycle, cycleCount, idx);
                 drawnow;
                 pause(pauseTime);
             end
@@ -3292,6 +3409,22 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             set(state.controls.runButton, "Enable", "on");
             set(state.controls.stopButton, "Enable", "off");
             setStatus("idle");
+        end
+        updateSaveGifButtonState();
+    end
+
+    % Keep the GIF export button enabled only when a valid result exists.
+    function updateSaveGifButtonState()
+        if ~isfield(state.controls, "saveGifButton") || ~isgraphics(state.controls.saveGifButton)
+            return;
+        end
+
+        hasValidResult = ~state.isRunning && ~isempty(state.bestResult) && isfield(state.bestResult, "path") ...
+            && any(~any(isnan(state.bestResult.path), 2));
+        if hasValidResult
+            set(state.controls.saveGifButton, "Enable", "on");
+        else
+            set(state.controls.saveGifButton, "Enable", "off");
         end
     end
 

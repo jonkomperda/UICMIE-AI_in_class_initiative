@@ -12,6 +12,8 @@ The overall goal is to give students and instructors practical, concrete example
 
 `ME320` contains a MATLAB app for mechanism synthesis using a genetic algorithm. The example focuses on four-bar and multi-bar linkage path generation, where a target path is specified and the solver searches for mechanism parameters that reproduce it as closely as possible.
 
+![](ME320/linkage_animation.gif)
+
 This folder highlights how an AI-inspired optimization method can be used in a classical mechanical design setting:
 
 - a user-defined or example path is treated as the design target
