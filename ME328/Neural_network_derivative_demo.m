@@ -24,11 +24,11 @@ function Neural_network_derivative_demo
 
     y = f(x);
     dydx = numericalDerivatives(y, dx);
-    y_nn = trainFunctionNetwork(x, y);
+    [y_nn, loss_history] = trainFunctionNetwork(x, y);
     results_table = makeResultsTable(x, y, dydx, y_nn);
 
     disp(results_table);
-    makePlots(x, y, dydx, y_nn);
+    makePlots(x, y, dydx, y_nn, loss_history);
 end
 
 function dydx = numericalDerivatives(y, dx)
@@ -47,7 +47,7 @@ function dydx = numericalDerivatives(y, dx)
     dydx(end) = (3 * y(end) - 4 * y(end-1) + y(end-2)) / (2 * dx);
 end
 
-function y_nn = trainFunctionNetwork(x, y)
+function [y_nn, loss_history] = trainFunctionNetwork(x, y)
 % Train a small neural network manually with gradient descent to
 % learn y = f(x) without toolbox dependencies, because I can't
 % get them to work.
@@ -74,6 +74,7 @@ function y_nn = trainFunctionNetwork(x, y)
     learningRate = 0.1;
     epochs = 5000;
     sampleCount = numel(x_norm);
+    loss_history = zeros(epochs, 1);
 
     rng(0);
     W1 = 0.5 * randn(hiddenLayerSize, 1);
@@ -87,6 +88,7 @@ function y_nn = trainFunctionNetwork(x, y)
         y_pred = W2 * A1 + b2;
 
         errorSignal = y_pred - y_norm;
+        loss_history(epoch) = mean(errorSignal .^ 2);
         dY = (2 / sampleCount) * errorSignal;
 
         dW2 = dY * A1.';
@@ -119,15 +121,15 @@ function results_table = makeResultsTable(x, y, dydx, y_nn)
 % predictions into a MATLAB table.
 
     results_table = table(x(:), y(:), y_nn(:), dydx(:), ...
-        'VariableNames', {'x', 'y', 'y_nn', 'y_prime', });
+        'VariableNames', {'x', 'y', 'y_nn', 'y_prime'});
 end
 
-function makePlots(x, y, dydx, y_nn)
-% Plot the function, neural-network fit, and numerical derivative.
+function makePlots(x, y, dydx, y_nn, loss_history)
+% Plot the function, neural-network fit, numerical derivative, and training loss.
 
     figure('Name', 'Function and Derivative', 'Color', 'w');
 
-    subplot(2, 1, 1);
+    subplot(3, 1, 1);
     plot(x, y, 'b-o', 'LineWidth', 1.5, 'MarkerSize', 5);
     hold on;
     plot(x, y_nn, 'k--', 'LineWidth', 1.5);
@@ -138,10 +140,17 @@ function makePlots(x, y, dydx, y_nn)
     title('Function Values and Neural Network Fit');
     legend('Function', 'Neural network', 'Location', 'best');
 
-    subplot(2, 1, 2);
+    subplot(3, 1, 2);
     plot(x, dydx, 'r-s', 'LineWidth', 1.5, 'MarkerSize', 5);
     grid on;
     xlabel('x');
     ylabel('dy/dx');
     title('Numerical Derivative');
+
+    subplot(3, 1, 3);
+    semilogy(1:numel(loss_history), loss_history, 'm-', 'LineWidth', 1.5);
+    grid on;
+    xlabel('Epoch');
+    ylabel('Loss');
+    title('Training Loss Over Epochs');
 end
