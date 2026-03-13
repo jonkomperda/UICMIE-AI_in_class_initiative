@@ -624,9 +624,12 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             pidTemperature(:) = 0;
             pidCoolingLevel(:) = 0;
             pidTemperature(1) = params.initialIndoor;
-            pidControllerState = struct("integralError", 0, "previousError", pidTemperature(1) - params.setpoint);
+            pidControllerState = struct( ...
+                "integralError", 0, ...
+                "previousError", pidTemperature(1) - params.setpoint, ...
+                "currentStage", 0);
         else
-            pidControllerState = struct("integralError", 0, "previousError", 0);
+            pidControllerState = struct("integralError", 0, "previousError", 0, "currentStage", 0);
         end
 
         for index = 1:(pointCount - 1)
@@ -728,10 +731,41 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         else
             controllerState.integralError = candidateIntegral;
             continuousDemand = min(max(rawDemand, 0), 1);
+            stage1OnThreshold = 0.12;
+            stage1OffThreshold = 0.05;
+            stage2OnThreshold = 0.60;
+            stage2OffThreshold = 0.40;
 
-            if continuousDemand >= 0.75
+            switch controllerState.currentStage
+                case 2
+                    if continuousDemand <= stage2OffThreshold
+                        if continuousDemand <= stage1OffThreshold
+                            controllerState.currentStage = 0;
+                        else
+                            controllerState.currentStage = 1;
+                        end
+                    end
+
+                case 1
+                    if continuousDemand >= stage2OnThreshold
+                        controllerState.currentStage = 2;
+                    elseif continuousDemand <= stage1OffThreshold
+                        controllerState.currentStage = 0;
+                    end
+
+                otherwise
+                    if continuousDemand >= stage2OnThreshold
+                        controllerState.currentStage = 2;
+                    elseif continuousDemand >= stage1OnThreshold
+                        controllerState.currentStage = 1;
+                    else
+                        controllerState.currentStage = 0;
+                    end
+            end
+
+            if controllerState.currentStage == 2
                 coolingLevel = 1.0;
-            elseif continuousDemand >= 0.25
+            elseif controllerState.currentStage == 1
                 coolingLevel = 0.5;
             else
                 coolingLevel = 0.0;
