@@ -114,7 +114,7 @@ The thermostat uses hysteresis:
 - AC turns off when indoor temperature falls below `setpoint - deadband/2`
 - inside that band, it keeps the previous on/off state
 
-In LaTeX form, with indoor temperature $T_{\mathrm{in}}(t)$, setpoint $T_{\mathrm{set}}$, deadband $\Delta T$, and thermostat state $u_{\mathrm{th}}(t) \in \{0,1\}$:
+In equation form, with indoor temperature $T_{\mathrm{in}}(t)$, setpoint $T_{\mathrm{set}}$, deadband $\Delta T$, and thermostat state $u_{\mathrm{th}}(t) \in \{0,1\}$:
 
 $$
 u_{\mathrm{th}}(t)=
