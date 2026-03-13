@@ -17,6 +17,7 @@ state.currentProfileName = "Custom";
 state.lastResults = [];
 state.isSelecting = false;
 state.exampleLibrary = getExampleLibrary();
+state.colors = getPlotColors();
 
 buildUi();
 loadExampleProfile(1);
@@ -208,6 +209,17 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", figColor);
 
+        state.controls.metricsBox = uicontrol( ...
+            "Parent", state.fig, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.73 0.035 0.22 0.055], ...
+            "String", {"AC Runtime: -- hr", "Duty Cycle: -- %"}, ...
+            "HorizontalAlignment", "left", ...
+            "FontWeight", "bold", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", [0.90 0.93 0.96]);
+
         refreshAmbientPlot();
         refreshResultsPlot();
     end
@@ -246,6 +258,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
+        updateMetricsBox();
         setStatus("loaded example");
         logMessage(sprintf("Loaded ambient profile: %s.", exampleProfile.name));
     end
@@ -274,6 +287,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
+        updateMetricsBox();
 
         if isempty(state.profilePoints)
             setStatus("profile cleared");
@@ -291,6 +305,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
+        updateMetricsBox();
         setStatus("profile cleared");
         logMessage("Cleared the ambient profile and previous simulation results.");
     end
@@ -308,14 +323,16 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
         state.lastResults = results;
         refreshResultsPlot();
+        updateMetricsBox();
 
         minIndoor = min(results.indoorTemperature);
         maxIndoor = max(results.indoorTemperature);
         dutyCycle = 100 * mean(results.acState);
+        onTimeHours = results.acOnTimeHours;
         setStatus("simulation complete");
         logMessage(sprintf( ...
-            "Simulation complete for %s. Indoor range %.1f to %.1f degF, AC duty cycle %.0f%%.", ...
-            ambientProfile.name, minIndoor, maxIndoor, dutyCycle));
+            "Simulation complete for %s. Indoor range %.1f to %.1f degF, AC duty cycle %.0f%%, AC on for %.2f hr.", ...
+            ambientProfile.name, minIndoor, maxIndoor, dutyCycle, onTimeHours));
     end
 
     function onFigureClick(~, ~)
@@ -346,6 +363,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
+        updateMetricsBox();
         setStatus("manual profile updated");
         logMessage(sprintf("Stored ambient point at t = %.2f hr, T = %.1f degF.", xPoint, yPoint));
     end
@@ -470,6 +488,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         results.indoorTemperature = indoorTemperature;
         results.setpoint = params.setpoint * ones(size(timeHours));
         results.acState = acState;
+        results.acOnTimeHours = sum(acState) * dtHours;
         results.controllerMode = char(controllerMode);
         results.profileName = ambientProfile.name;
     end
@@ -517,7 +536,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             lineHandle = plot( ...
                 state.ambientAxes, ambientProfile.timeHours, ambientProfile.temperature, ...
                 "LineWidth", 2.1, ...
-                "Color", [0.20 0.45 0.78]);
+                "Color", state.colors.outdoor);
 
             pointHandle = scatter( ...
                 state.ambientAxes, ambientProfile.controlTimes, ambientProfile.controlTemps, ...
@@ -536,7 +555,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
                 state.ambientAxes, sortedPoints(:, 1), sortedPoints(:, 2), ...
                 "o--", ...
                 "LineWidth", 1.4, ...
-                "Color", [0.20 0.45 0.78], ...
+                "Color", state.colors.outdoor, ...
                 "MarkerFaceColor", [0.85 0.33 0.10]);
             ylim(state.ambientAxes, computeTemperatureLimits(sortedPoints(:, 2)));
             title(state.ambientAxes, "Ambient Temperature Profile");
@@ -557,14 +576,17 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             title(state.resultsAxes, "Indoor Temperature Response");
             xlabel(state.resultsAxes, "Time (hours)");
             ylabel(state.resultsAxes, "Temperature (degF)");
+            set(state.resultsAxes, "YColor", state.colors.indoor);
             xlim(state.resultsAxes, [0 24]);
             ylim(state.resultsAxes, [60 100]);
             yyaxis(state.resultsAxes, "right");
             ylabel(state.resultsAxes, "AC State");
+            set(state.resultsAxes, "YColor", state.colors.acState);
             ylim(state.resultsAxes, [-0.05 1.05]);
             yticks(state.resultsAxes, [0 1]);
             yticklabels(state.resultsAxes, {"Off", "On"});
             yyaxis(state.resultsAxes, "left");
+            set(state.resultsAxes, "YColor", state.colors.indoor);
             text( ...
                 state.resultsAxes, 12, 80, ...
                 {"Run the simulation to view", "the indoor response and AC state."}, ...
@@ -578,19 +600,22 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         yyaxis(state.resultsAxes, "left");
         ambientHandle = plot( ...
             state.resultsAxes, state.lastResults.timeHours, state.lastResults.ambientTemperature, ...
+            "--", ...
             "LineWidth", 1.8, ...
-            "Color", [0.82 0.38 0.14]);
+            "Color", state.colors.outdoor);
         hold(state.resultsAxes, "on");
         indoorHandle = plot( ...
             state.resultsAxes, state.lastResults.timeHours, state.lastResults.indoorTemperature, ...
+            "-", ...
             "LineWidth", 2.0, ...
-            "Color", [0.11 0.56 0.34]);
+            "Color", state.colors.indoor);
         setpointHandle = plot( ...
             state.resultsAxes, state.lastResults.timeHours, state.lastResults.setpoint, ...
             "--", ...
             "LineWidth", 1.5, ...
             "Color", [0.35 0.35 0.35]);
         ylabel(state.resultsAxes, "Temperature (degF)");
+        set(state.resultsAxes, "YColor", state.colors.indoor);
         ylim(state.resultsAxes, computeTemperatureLimits( ...
             [state.lastResults.ambientTemperature(:); state.lastResults.indoorTemperature(:); state.lastResults.setpoint(:)]));
 
@@ -598,8 +623,9 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         acHandle = stairs( ...
             state.resultsAxes, state.lastResults.timeHours, state.lastResults.acState, ...
             "LineWidth", 1.5, ...
-            "Color", [0.18 0.18 0.18]);
+            "Color", state.colors.acState);
         ylabel(state.resultsAxes, "AC State");
+        set(state.resultsAxes, "YColor", state.colors.acState);
         ylim(state.resultsAxes, [-0.05 1.05]);
         yticks(state.resultsAxes, [0 1]);
         yticklabels(state.resultsAxes, {"Off", "On"});
@@ -613,6 +639,18 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Location", "northwest");
         grid(state.resultsAxes, "on");
         hold(state.resultsAxes, "off");
+    end
+
+    function updateMetricsBox()
+        if isempty(state.lastResults)
+            set(state.controls.metricsBox, "String", {"AC Runtime: -- hr", "Duty Cycle: -- %"});
+            return;
+        end
+
+        set(state.controls.metricsBox, ...
+            "String", { ...
+            sprintf("AC Runtime: %.2f hr", state.lastResults.acOnTimeHours), ...
+            sprintf("Duty Cycle: %.0f %%", 100 * mean(state.lastResults.acState))});
     end
 
     function limits = computeTemperatureLimits(values)
@@ -680,5 +718,12 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             17 89; ...
             20 80; ...
             24 70];
+    end
+
+    function colors = getPlotColors()
+        colors = struct();
+        colors.outdoor = [0.82 0.38 0.14];
+        colors.indoor = [0.11 0.56 0.34];
+        colors.acState = [0.00 0.47 0.74];
     end
 end
