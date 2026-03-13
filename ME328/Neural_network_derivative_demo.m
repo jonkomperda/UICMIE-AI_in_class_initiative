@@ -1,4 +1,7 @@
 %% Neural Network Derivative Demo
+%
+% _By: Jon Komperda, PhD 2026_ 
+%
 % This live script walks through every step used to compare a manual neural 
 % network derivative against a second-order finite-difference derivative.
 % 
