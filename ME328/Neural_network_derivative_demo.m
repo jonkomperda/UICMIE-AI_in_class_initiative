@@ -23,12 +23,19 @@ function Neural_network_derivative_demo
     end
 
     y = f(x);
-    dydx = numericalDerivatives(y, dx);
-    [y_nn, loss_history] = trainFunctionNetwork(x, y);
-    results_table = makeResultsTable(x, y, dydx, y_nn);
+    dydx_fd = numericalDerivatives(y, dx);
+    [y_nn, model, loss_history] = trainFunctionNetwork(x, y);
+    dydx_nn = neuralNetworkDerivative(x, model);
+    derivative_error = dydx_nn - dydx_fd;
+    absolute_error = abs(derivative_error);
+    rmse_error = sqrt(mean(derivative_error .^ 2));
+    max_abs_error = max(absolute_error);
+    results_table = makeResultsTable(x, y, y_nn, dydx_fd, dydx_nn, derivative_error, absolute_error);
 
     disp(results_table);
-    makePlots(x, y, dydx, y_nn, loss_history);
+    fprintf('Derivative RMSE: %.6f\n', rmse_error);
+    fprintf('Max absolute derivative error: %.6f\n', max_abs_error);
+    makePlots(x, y, y_nn, dydx_fd, dydx_nn, derivative_error, loss_history);
 end
 
 function dydx = numericalDerivatives(y, dx)
@@ -47,7 +54,7 @@ function dydx = numericalDerivatives(y, dx)
     dydx(end) = (3 * y(end) - 4 * y(end-1) + y(end-2)) / (2 * dx);
 end
 
-function [y_nn, loss_history] = trainFunctionNetwork(x, y)
+function [y_nn, model, loss_history] = trainFunctionNetwork(x, y)
 % Train a small neural network manually with gradient descent to
 % learn y = f(x) without toolbox dependencies, because I can't
 % get them to work.
@@ -114,40 +121,78 @@ function [y_nn, loss_history] = trainFunctionNetwork(x, y)
     y_pred_norm = W2 * A1 + b2;
     y_nn = y_pred_norm * outputStd + outputMean;
     y_nn = y_nn(:).';
+
+    model.W1 = W1;
+    model.b1 = b1;
+    model.W2 = W2;
+    model.b2 = b2;
+    model.inputMean = inputMean;
+    model.inputStd = inputStd;
+    model.outputMean = outputMean;
+    model.outputStd = outputStd;
 end
 
-function results_table = makeResultsTable(x, y, dydx, y_nn)
-% Assemble x, y, derivative data, and neural-network
-% predictions into a MATLAB table.
+function dydx_nn = neuralNetworkDerivative(x, model)
+% Compute the derivative analytically from the trained neural network.
 
-    results_table = table(x(:), y(:), y_nn(:), dydx(:), ...
-        'VariableNames', {'x', 'y', 'y_nn', 'y_prime'});
+    x_row = x(:).';
+    x_norm = (x_row - model.inputMean) / model.inputStd;
+    Z1 = model.W1 * x_norm + model.b1;
+    A1 = tanh(Z1);
+    dA1dXnorm = 1 - A1 .^ 2;
+
+    dydx_norm = model.W2 * (dA1dXnorm .* model.W1);
+    scaleFactor = model.outputStd / model.inputStd;
+    dydx_nn = scaleFactor * dydx_norm;
+    dydx_nn = dydx_nn(:).';
 end
 
-function makePlots(x, y, dydx, y_nn, loss_history)
-% Plot the function, neural-network fit, numerical derivative, and training loss.
+function results_table = makeResultsTable(x, y, y_nn, dydx_fd, dydx_nn, derivative_error, absolute_error)
+% Assemble function, derivative, and error comparison data into a MATLAB table.
+
+    results_table = table(x(:), y(:), y_nn(:), dydx_fd(:), dydx_nn(:), ...
+        derivative_error(:), absolute_error(:), ...
+        'VariableNames', {'x', 'y', 'y_nn', 'y_prime_fd', 'y_prime_nn', 'error', 'abs_error'});
+end
+
+function makePlots(x, y, y_nn, dydx_fd, dydx_nn, derivative_error, loss_history)
+% Plot function comparison, derivative comparison, derivative error, and loss.
 
     figure('Name', 'Function and Derivative', 'Color', 'w');
 
-    subplot(3, 1, 1);
-    plot(x, y, 'b-o', 'LineWidth', 1.5, 'MarkerSize', 5);
+    subplot(4, 1, 1);
+    plot(x, y, 'r-', 'LineWidth', 1.5);
     hold on;
-    plot(x, y_nn, 'k--', 'LineWidth', 1.5);
+    plot(x, y_nn, 'b--o', 'LineWidth', 1.5, 'MarkerSize', 5);
     hold off;
     grid on;
     xlabel('x');
     ylabel('y = f(x)');
     title('Function Values and Neural Network Fit');
-    legend('Function', 'Neural network', 'Location', 'best');
+    legend('Function reference', 'Neural network prediction', 'Location', 'best');
 
-    subplot(3, 1, 2);
-    plot(x, dydx, 'r-s', 'LineWidth', 1.5, 'MarkerSize', 5);
+    subplot(4, 1, 2);
+    plot(x, dydx_fd, 'r-', 'LineWidth', 1.5);
+    hold on;
+    plot(x, dydx_nn, 'b--o', 'LineWidth', 1.5, 'MarkerSize', 5);
+    hold off;
     grid on;
     xlabel('x');
     ylabel('dy/dx');
-    title('Numerical Derivative');
+    title('Derivative Comparison');
+    legend('Finite difference', 'Neural network derivative', 'Location', 'best');
 
-    subplot(3, 1, 3);
+    subplot(4, 1, 3);
+    plot(x, derivative_error, 'r-', 'LineWidth', 1.5);
+    hold on;
+    yline(0, 'k--', 'LineWidth', 1.0);
+    hold off;
+    grid on;
+    xlabel('x');
+    ylabel('Error');
+    title('Derivative Error (NN - Finite Difference)');
+
+    subplot(4, 1, 4);
     semilogy(1:numel(loss_history), loss_history, 'm-', 'LineWidth', 1.5);
     grid on;
     xlabel('Epoch');
