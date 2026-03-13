@@ -114,6 +114,17 @@ The thermostat uses hysteresis:
 - AC turns off when indoor temperature falls below `setpoint - deadband/2`
 - inside that band, it keeps the previous on/off state
 
+In LaTeX form, with indoor temperature $T_{\mathrm{in}}(t)$, setpoint $T_{\mathrm{set}}$, deadband $\Delta T$, and thermostat state $u_{\mathrm{th}}(t) \in \{0,1\}$:
+
+$$
+u_{\mathrm{th}}(t)=
+\begin{cases}
+1, & T_{\mathrm{in}}(t) > T_{\mathrm{set}} + \dfrac{\Delta T}{2} \\
+0, & T_{\mathrm{in}}(t) < T_{\mathrm{set}} - \dfrac{\Delta T}{2} \\
+u_{\mathrm{th}}(t^-), & \text{otherwise}
+\end{cases}
+$$
+
 ### PID controller
 
 The PID branch uses:
@@ -126,6 +137,26 @@ The PID branch uses:
     maps the PID demand to stepped cooling levels at `0`, `0.5`, and `1` using lower and higher demand bands so stage 1 engages earlier and stage 2 engages only at stronger cooling demand
 
 This creates a classroom-friendly comparison between rule-based switching and continuous feedback control.
+
+The PID governing equation is based on the temperature error
+$e(t)=T_{\mathrm{in}}(t)-T_{\mathrm{set}}$,
+with cooling demand written as:
+
+$$
+u_{\mathrm{PID}}(t) = K_p e(t) + K_i \int_0^t e(\tau)\,d\tau + K_d \frac{de(t)}{dt}
+$$
+
+In the implementation, this raw PID demand is then mapped into the selected actuator mode:
+
+$$
+u_{\mathrm{cool}}(t)=
+\begin{cases}
+\mathrm{clip}\!\left(u_{\mathrm{PID}}(t),\,0,\,1\right), & \text{Duty Cycle mode} \\
+0,\ 0.5,\ \text{or }1, & \text{Two Stage mode}
+\end{cases}
+$$
+
+where $\mathrm{clip}(x,0,1)$ limits the command to the interval $[0,1]$.
 
 ## Future plans
 
