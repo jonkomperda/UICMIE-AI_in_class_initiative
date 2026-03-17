@@ -28,6 +28,14 @@ state.isSelecting = false;           % Whether mouse clicks should add target-pa
 state.isRunning = false;             % Whether a GA solve is currently in progress.
 state.stopRequested = false;         % Cooperative stop flag checked inside the GA loop.
 state.previewFrame = 1;              % Current frame index for preview animation cycling.
+state.solutionView = struct( ...     % Handles for the separate annotated solution popup.
+    "figure", [], ...
+    "axes", [], ...
+    "summaryBox", [], ...
+    "saveButton", [], ...
+    "hintLabel", [], ...
+    "activeLabel", [], ...
+    "dragOffset", [0 0]);
 state.view.lockAxes = false;         % Whether the current axis limits are frozen.
 state.view.pathLimits = [];          % Stored limits for the target-path axes.
 state.view.linkageLimits = [];       % Stored limits for the mechanism axes.
@@ -37,7 +45,7 @@ state.mechanismChoices = getMechanismChoices(); % Mechanism families available i
 
 buildUi();
 loadExamplePath();
-logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
+logMessage("App ready. Define a trajectory manually or load a built-in example.");
 
     % Build the entire GUI: figure, axes, control panel, and footer text.
     function buildUi()
@@ -435,8 +443,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             "Parent", state.controlsPanel, ...
             "Style", "pushbutton", ...
             "Units", "normalized", ...
-            "Position", [0.05 0.102 0.43 0.042], ...
+            "Position", [0.05 0.102 0.36 0.042], ...
             "String", "Run Genetic Algorithm", ...
+            "FontSize", 8, ...
             "FontWeight", "bold", ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", [0.8 0.8 0.8], ...
@@ -447,9 +456,10 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             "Parent", state.controlsPanel, ...
             "Style", "pushbutton", ...
             "Units", "normalized", ...
-            "Position", [0.51 0.102 0.18 0.042], ...
+            "Position", [0.43 0.102 0.09 0.042], ...
             "String", "Stop", ...
             "Enable", "off", ...
+            "FontSize", 8, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", [0.8 0.8 0.8], ...
             "TooltipString", "Request a stop after the current generation finishes.", ...
@@ -459,13 +469,27 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             "Parent", state.controlsPanel, ...
             "Style", "pushbutton", ...
             "Units", "normalized", ...
-            "Position", [0.72 0.102 0.20 0.042], ...
+            "Position", [0.54 0.102 0.16 0.042], ...
             "String", "Save GIF", ...
             "Enable", "off", ...
+            "FontSize", 8, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", [0.8 0.8 0.8], ...
             "TooltipString", "Save the final mechanism animation as a GIF using the current animation cycle and frame pause settings.", ...
             "Callback", @onSaveGif);
+
+        state.controls.seeSolutionButton = uicontrol( ...
+            "Parent", state.controlsPanel, ...
+            "Style", "pushbutton", ...
+            "Units", "normalized", ...
+            "Position", [0.72 0.102 0.20 0.042], ...
+            "String", "See Solution", ...
+            "Enable", "off", ...
+            "FontSize", 8, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", [0.8 0.8 0.8], ...
+            "TooltipString", "Open a fully annotated static linkage view for the current best mechanism.", ...
+            "Callback", @onSeeSolution);
 
         state.controls.statusLabel = uicontrol( ...
             "Parent", state.controlsPanel, ...
@@ -555,9 +579,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
     % List of built-in target trajectories available in the example menu.
     function library = getExampleLibrary()
         library = struct( ...
-            'name', {'Ellipse', 'Circle', 'Rounded Rectangle', 'Rounded Square', 'Half Moon', 'Heart', 'Lemniscate', 'Teardrop', 'Bean', 'S Curve'}, ...
-            'id', {'ellipse', 'circle', 'rounded_rectangle', 'rounded_square', 'half_moon', 'heart', 'lemniscate', 'teardrop', 'bean', 's_curve'}, ...
-            'closed', {true, true, true, true, true, true, true, true, true, false});
+            'name', {'Empty Shape', 'Ellipse', 'Circle', 'Rounded Rectangle', 'Rounded Square', 'Half Moon', 'Heart', 'Lemniscate', 'Teardrop', 'Bean', 'S Curve'}, ...
+            'id', {'empty', 'ellipse', 'circle', 'rounded_rectangle', 'rounded_square', 'half_moon', 'heart', 'lemniscate', 'teardrop', 'bean', 's_curve'}, ...
+            'closed', {false, true, true, true, true, true, true, true, true, true, false});
     end
 
     % Mechanism families shown in the GUI popup. Each mode corresponds to
@@ -1197,13 +1221,31 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
     % Toggle between "click to add points" mode and normal GUI interaction.
     function onSelectModeChanged(src, ~)
-        state.isSelecting = logical(get(src, "Value"));
+        setSelectionMode(logical(get(src, "Value")), true);
+    end
+
+    % Central helper so the app can enter/exit manual point-selection mode
+    % from both the toggle button and programmatic flows like Empty Shape.
+    function setSelectionMode(isEnabled, shouldLog)
+        if nargin < 2
+            shouldLog = false;
+        end
+
+        state.isSelecting = logical(isEnabled);
+        if isfield(state.controls, "selectButton") && isgraphics(state.controls.selectButton)
+            set(state.controls.selectButton, "Value", double(state.isSelecting));
+        end
+
         if state.isSelecting
             set(state.fig, "Pointer", "crosshair");
-            logMessage("Point selection enabled. Click inside the Target Path axes.");
+            if shouldLog
+                logMessage("Point selection enabled. Click inside the Target Path axes.");
+            end
         else
             set(state.fig, "Pointer", "arrow");
-            logMessage("Point selection disabled.");
+            if shouldLog
+                logMessage("Point selection disabled.");
+            end
         end
     end
 
@@ -1226,6 +1268,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         state.targetPoints = zeros(0, 2);
         state.bestResult = [];
         state.bestHistory = [];
+        closeSolutionWindow();
         refreshPlots();
         refreshHistoryPlot();
         updateSaveGifButtonState();
@@ -1261,6 +1304,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
         state.bestResult = [];
         state.bestHistory = [];
+        closeSolutionWindow();
         refreshPlots();
         refreshHistoryPlot();
         updateSaveGifButtonState();
@@ -1357,10 +1401,17 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         refreshTargetData();
         state.bestResult = [];
         state.bestHistory = [];
+        closeSolutionWindow();
         refreshPlots();
         refreshHistoryPlot();
         updateSaveGifButtonState();
-        logMessage(sprintf("Loaded %s example path.", exampleSpec.name));
+        if strcmp(exampleSpec.id, 'empty')
+            setSelectionMode(true, false);
+            logMessage("Loaded Empty Shape. The canvas is cleared and ready for manual point entry.");
+        else
+            setSelectionMode(false, false);
+            logMessage(sprintf("Loaded %s example path.", exampleSpec.name));
+        end
     end
 
     % Generate one of the built-in example trajectories.
@@ -1369,6 +1420,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         isClosed = true;
 
         switch shapeId
+            case 'empty'
+                points = zeros(0, 2);
+                isClosed = false;
             case 'ellipse'
                 points = [2.8 * cos(t), 1.7 * sin(t)];
             case 'circle'
@@ -1399,7 +1453,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
                 isClosed = false;
         end
 
-        points = centerExamplePath(points);
+        if ~isempty(points)
+            points = centerExamplePath(points);
+        end
     end
 
     % Superellipse helper used for rounded rectangles and rounded squares.
@@ -1499,6 +1555,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         state.isRunning = true;
         state.bestResult = [];
         state.bestHistory = [];
+        closeSolutionWindow();
         setBusyState(true);
 
         try
@@ -1605,7 +1662,9 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             end
         catch err
             logMessage(sprintf("Run failed: %s", err.message));
-            errordlg(err.message, "Run Failed");
+            if isfield(state, "fig") && ~isempty(state.fig) && isgraphics(state.fig)
+                errordlg(err.message, "Run Failed");
+            end
         end
 
         state.isRunning = false;
@@ -1618,6 +1677,30 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
             state.stopRequested = true;
             logMessage("Stop requested. Finishing the current generation.");
         end
+    end
+
+    % Open a separate annotated static solution view for the current best
+    % mechanism so it can be reproduced in other software.
+    function onSeeSolution(~, ~)
+        if state.isRunning
+            logMessage("Wait for the active run to finish before opening the solution view.");
+            return;
+        end
+
+        if isempty(state.bestResult) || ~isfield(state.bestResult, "path")
+            errordlg("Run the optimizer first so there is a solved linkage to inspect.", "No Solution Available");
+            return;
+        end
+
+        validFrames = getValidFrameIndices(state.bestResult);
+        if isempty(validFrames)
+            errordlg("The current best mechanism does not have a valid configuration to annotate.", "No Valid Solution");
+            return;
+        end
+
+        ensureSolutionWindow();
+        refreshSolutionWindow(state.bestResult, validFrames(1));
+        logMessage("Opened the annotated solution view.");
     end
 
     % Save the current best final animation to a GIF file.
@@ -1699,6 +1782,613 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         refreshLinkagePlot();
         setStatus("idle");
         updateSaveGifButtonState();
+    end
+
+    % Create the annotated solution popup if it is not already open.
+    function ensureSolutionWindow()
+        if isfield(state.solutionView, "figure") && ~isempty(state.solutionView.figure) && isgraphics(state.solutionView.figure)
+            figure(state.solutionView.figure);
+            return;
+        end
+
+        solutionColor = [0.95 0.96 0.98];
+        panelColor = [0.92 0.93 0.96];
+        state.solutionView.figure = figure( ...
+            "Name", "Linkage Solution View", ...
+            "NumberTitle", "off", ...
+            "Color", solutionColor, ...
+            "MenuBar", "none", ...
+            "ToolBar", "none", ...
+            "DefaultUicontrolForegroundColor", [0 0 0], ...
+            "DefaultAxesXColor", [0 0 0], ...
+            "DefaultAxesYColor", [0 0 0], ...
+            "DefaultTextColor", [0 0 0], ...
+            "Position", [140 90 1180 720], ...
+            "CloseRequestFcn", @onCloseSolutionFigure);
+
+        state.solutionView.axes = axes( ...
+            "Parent", state.solutionView.figure, ...
+            "Units", "normalized", ...
+            "Position", [0.05 0.10 0.58 0.84], ...
+            "Box", "on");
+        styleAxes(state.solutionView.axes);
+
+        summaryPanel = uipanel( ...
+            "Parent", state.solutionView.figure, ...
+            "Title", "Reproduction Summary", ...
+            "FontSize", 11, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor, ...
+            "Position", [0.67 0.10 0.29 0.84]);
+
+        state.solutionView.summaryBox = uicontrol( ...
+            "Parent", summaryPanel, ...
+            "Style", "listbox", ...
+            "Units", "normalized", ...
+            "Position", [0.05 0.05 0.90 0.90], ...
+            "String", {'No solution loaded yet.'}, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", "white", ...
+            "Max", 2, ...
+            "Min", 0);
+
+        state.solutionView.saveButton = uicontrol( ...
+            "Parent", state.solutionView.figure, ...
+            "Style", "pushbutton", ...
+            "Units", "normalized", ...
+            "Position", [0.80 0.025 0.13 0.05], ...
+            "String", "Save", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", [0.8 0.8 0.8], ...
+            "TooltipString", "Save the annotated linkage view as a PNG image.", ...
+            "Callback", @onSaveSolutionImage);
+
+        state.solutionView.hintLabel = uicontrol( ...
+            "Parent", state.solutionView.figure, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.05 0.02 0.60 0.05], ...
+            "String", "Drag labels to move them. Double-click a label to edit its text.", ...
+            "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", solutionColor);
+    end
+
+    % Refresh the popup to show one deterministic solved mechanism frame.
+    function refreshSolutionWindow(result, frameIndex)
+        if ~isfield(state.solutionView, "axes") || isempty(state.solutionView.axes) || ~isgraphics(state.solutionView.axes)
+            return;
+        end
+
+        onSolutionLabelMouseUp();
+        axHandle = state.solutionView.axes;
+        solutionData = buildSolutionData(result, frameIndex);
+        visiblePoints = collectSolutionVisiblePoints(result, solutionData);
+
+        cla(axHandle);
+        hold(axHandle, "on");
+        validFrames = getValidFrameIndices(result);
+        if ~isempty(validFrames)
+            plot(axHandle, result.path(validFrames, 1), result.path(validFrames, 2), "--", ...
+                "Color", [0.86 0.50 0.23], "LineWidth", 1.4, "DisplayName", "Synthesized path");
+        end
+        drawMechanismFrame(result, frameIndex, true, axHandle);
+        annotateSolutionView(axHandle, solutionData, visiblePoints);
+        title(axHandle, sprintf("%s Solution | frame %d", mechanismModeToLabel(result.mechanismMode), frameIndex));
+        axis(axHandle, "equal");
+        grid(axHandle, "on");
+        padAxes(axHandle, visiblePoints, 1.18);
+        legend(axHandle, "off");
+        hold(axHandle, "off");
+
+        if isfield(state.solutionView, "summaryBox") && ~isempty(state.solutionView.summaryBox) && isgraphics(state.solutionView.summaryBox)
+            set(state.solutionView.summaryBox, "String", buildSolutionSummaryLines(result, frameIndex, solutionData), "Value", 1);
+        end
+
+        if isfield(state.solutionView, "figure") && ~isempty(state.solutionView.figure) && isgraphics(state.solutionView.figure)
+            set(state.solutionView.figure, "Name", sprintf("%s Solution View", mechanismModeToLabel(result.mechanismMode)));
+            figure(state.solutionView.figure);
+        end
+    end
+
+    % Save only the annotated linkage axes from the popup as a PNG image.
+    function onSaveSolutionImage(~, ~)
+        if ~isfield(state.solutionView, "axes") || isempty(state.solutionView.axes) || ~isgraphics(state.solutionView.axes) || isempty(state.bestResult)
+            errordlg("Open a solution view before saving an image.", "No Solution View");
+            return;
+        end
+
+        defaultName = sprintf("%s_solution.png", sanitizeFileLabel(mechanismModeToLabel(state.bestResult.mechanismMode)));
+        [fileName, filePath] = uiputfile({"*.png", "PNG Files (*.png)"}, "Save Solution Image", defaultName);
+        if isequal(fileName, 0) || isequal(filePath, 0)
+            logMessage("Solution image export canceled.");
+            return;
+        end
+
+        outputPath = fullfile(filePath, fileName);
+        if numel(outputPath) < 4 || ~strcmpi(outputPath(end-3:end), ".png")
+            outputPath = [outputPath, ".png"];
+        end
+
+        try
+            if exist("exportgraphics", "file") == 2
+                exportgraphics(state.solutionView.axes, outputPath, "Resolution", 200);
+            else
+                frameImage = getframe(state.solutionView.axes);
+                [rgbImage, ~] = frame2im(frameImage);
+                imwrite(rgbImage, outputPath, "png");
+            end
+            logMessage(sprintf("Saved solution image to %s", outputPath));
+        catch err
+            logMessage(sprintf("Solution image export failed: %s", err.message));
+            errordlg(err.message, "Solution Image Export Failed");
+        end
+    end
+
+    % Close the popup and clear the stored handles.
+    function closeSolutionWindow()
+        if isfield(state.solutionView, "figure") && ~isempty(state.solutionView.figure) && isgraphics(state.solutionView.figure)
+            delete(state.solutionView.figure);
+        end
+        resetSolutionWindowState();
+    end
+
+    % Handle manual closing of the solution popup.
+    function onCloseSolutionFigure(src, ~)
+        resetSolutionWindowState();
+        delete(src);
+    end
+
+    % Reset the stored popup handles after closing or invalidation.
+    function resetSolutionWindowState()
+        state.solutionView.figure = [];
+        state.solutionView.axes = [];
+        state.solutionView.summaryBox = [];
+        state.solutionView.saveButton = [];
+        state.solutionView.hintLabel = [];
+        state.solutionView.activeLabel = [];
+        state.solutionView.dragOffset = [0 0];
+    end
+
+    % Build a deterministic static snapshot of the solved mechanism.
+    function solutionData = buildSolutionData(result, frameIndex)
+        solutionData = struct();
+        solutionData.pointEntries = buildSolutionPointEntries(result, frameIndex);
+        solutionData.segmentEntries = buildSolutionSegmentEntries(result, frameIndex);
+    end
+
+    % Collect the visible points that should influence the popup's axis fit.
+    function pts = collectSolutionVisiblePoints(result, solutionData)
+        pts = zeros(0, 2);
+        if isfield(result, "path")
+            validFrames = getValidFrameIndices(result);
+            if ~isempty(validFrames)
+                pts = [pts; result.path(validFrames, :)];
+            end
+        end
+
+        idx = 1;
+        while idx <= numel(solutionData.pointEntries)
+            pts = [pts; solutionData.pointEntries(idx).point];
+            idx = idx + 1;
+        end
+
+        idx = 1;
+        while idx <= numel(solutionData.segmentEntries)
+            pts = [pts; solutionData.segmentEntries(idx).p1; solutionData.segmentEntries(idx).p2];
+            idx = idx + 1;
+        end
+    end
+
+    % Draw readable labels for joints, grounds, and measured segments.
+    function annotateSolutionView(axHandle, solutionData, visiblePoints)
+        if isempty(visiblePoints)
+            axisSpan = 1.0;
+        else
+            span = max(max(visiblePoints, [], 1) - min(visiblePoints, [], 1));
+            axisSpan = max(span, 1.0);
+        end
+
+        pointOffset = 0.035 * axisSpan;
+        segmentOffset = 0.045 * axisSpan;
+
+        idx = 1;
+        while idx <= numel(solutionData.pointEntries)
+            entry = solutionData.pointEntries(idx);
+            labelText = entry.label;
+            if entry.isGround
+                labelText = sprintf("%s (ground)", entry.label);
+            end
+            createInteractiveSolutionLabel(axHandle, entry.point(1) + pointOffset, entry.point(2) + pointOffset, labelText, ...
+                "Color", [0 0 0], ...
+                "FontSize", 9, ...
+                "FontWeight", "bold", ...
+                "BackgroundColor", [1 1 1]);
+            idx = idx + 1;
+        end
+
+        idx = 1;
+        while idx <= numel(solutionData.segmentEntries)
+            entry = solutionData.segmentEntries(idx);
+            annotateSegmentMeasurement(axHandle, entry, segmentOffset);
+            idx = idx + 1;
+        end
+    end
+
+    % Place one dimension label near a segment midpoint with a small offset.
+    function annotateSegmentMeasurement(axHandle, entry, offsetMagnitude)
+        delta = entry.p2 - entry.p1;
+        segmentLength = norm(delta);
+        if segmentLength < 1e-10
+            return;
+        end
+
+        midpoint = 0.5 * (entry.p1 + entry.p2);
+        normalDir = [-delta(2), delta(1)] / segmentLength;
+        labelPoint = midpoint + offsetMagnitude * normalDir;
+        createInteractiveSolutionLabel(axHandle, labelPoint(1), labelPoint(2), sprintf("%s = %.3f", entry.label, segmentLength), ...
+            "Color", entry.color, ...
+            "FontSize", 8.5, ...
+            "FontWeight", "bold", ...
+            "BackgroundColor", [1 1 1], ...
+            "HorizontalAlignment", "center");
+    end
+
+    % Create one draggable/editable annotation label in the solution view.
+    function labelHandle = createInteractiveSolutionLabel(axHandle, xPos, yPos, labelText, varargin)
+        labelHandle = text(axHandle, xPos, yPos, labelText, ...
+            "Interpreter", "none", ...
+            "Clipping", "off", ...
+            "HitTest", "on", ...
+            "PickableParts", "all", ...
+            "ButtonDownFcn", @onSolutionLabelMouseDown, ...
+            varargin{:});
+    end
+
+    % Start dragging a label or edit it when the user double-clicks.
+    function onSolutionLabelMouseDown(src, ~)
+        if ~isfield(state.solutionView, "figure") || isempty(state.solutionView.figure) || ~isgraphics(state.solutionView.figure)
+            return;
+        end
+
+        clickType = get(state.solutionView.figure, "SelectionType");
+        if strcmp(clickType, "open")
+            currentText = get(src, "String");
+            if iscell(currentText)
+                currentText = strjoin(currentText, ' ');
+            end
+            editedText = inputdlg("Edit solution label:", "Edit Label", [1 60], {char(currentText)});
+            if ~isempty(editedText)
+                set(src, "String", editedText{1});
+            end
+            return;
+        end
+
+        labelAxes = ancestor(src, "axes");
+        if isempty(labelAxes) || ~isgraphics(labelAxes)
+            return;
+        end
+
+        currentPoint = get(labelAxes, "CurrentPoint");
+        anchorPoint = get(src, "Position");
+        state.solutionView.activeLabel = src;
+        state.solutionView.dragOffset = anchorPoint(1:2) - currentPoint(1, 1:2);
+        set(state.solutionView.figure, ...
+            "WindowButtonMotionFcn", @onSolutionLabelDrag, ...
+            "WindowButtonUpFcn", @onSolutionLabelMouseUp);
+    end
+
+    % Drag the selected annotation label with the mouse.
+    function onSolutionLabelDrag(~, ~)
+        if ~isfield(state.solutionView, "activeLabel") || isempty(state.solutionView.activeLabel) || ~isgraphics(state.solutionView.activeLabel)
+            onSolutionLabelMouseUp();
+            return;
+        end
+
+        labelAxes = ancestor(state.solutionView.activeLabel, "axes");
+        if isempty(labelAxes) || ~isgraphics(labelAxes)
+            onSolutionLabelMouseUp();
+            return;
+        end
+
+        currentPoint = get(labelAxes, "CurrentPoint");
+        newPosition = currentPoint(1, 1:2) + state.solutionView.dragOffset;
+        labelPosition = get(state.solutionView.activeLabel, "Position");
+        labelPosition(1:2) = newPosition;
+        set(state.solutionView.activeLabel, "Position", labelPosition);
+        drawnow limitrate;
+    end
+
+    % Finish a label drag interaction and clear the temporary callbacks.
+    function onSolutionLabelMouseUp(~, ~)
+        state.solutionView.activeLabel = [];
+        state.solutionView.dragOffset = [0 0];
+        if isfield(state.solutionView, "figure") && ~isempty(state.solutionView.figure) && isgraphics(state.solutionView.figure)
+            set(state.solutionView.figure, "WindowButtonMotionFcn", "", "WindowButtonUpFcn", "");
+        end
+    end
+
+    % Extract the point labels and coordinates that appear in the popup.
+    function pointEntries = buildSolutionPointEntries(result, frameIndex)
+        pointEntries = repmat(struct("label", "", "point", [0 0], "isGround", false), 0, 1);
+        fieldMap = { ...
+            'A', 'A'; ...
+            'B', 'B'; ...
+            'C', 'C'; ...
+            'D', 'D'; ...
+            'E', 'E'; ...
+            'F', 'F'; ...
+            'J', 'J'; ...
+            'sliderB', 'SB'; ...
+            'sliderC', 'SC'; ...
+            'path', 'P'};
+        groundLabels = getGroundPointLabels(result);
+
+        idx = 1;
+        while idx <= size(fieldMap, 1)
+            sourceField = fieldMap{idx, 1};
+            label = fieldMap{idx, 2};
+            if isfield(result, sourceField)
+                fieldValue = result.(sourceField);
+                if size(fieldValue, 1) >= frameIndex
+                    pointValue = fieldValue(frameIndex, :);
+                    if numel(pointValue) == 2 && ~any(isnan(pointValue))
+                        pointEntries(end + 1, 1) = struct( ...
+                            "label", label, ...
+                            "point", pointValue, ...
+                            "isGround", any(strcmp(label, groundLabels)));
+                    end
+                end
+            end
+            idx = idx + 1;
+        end
+    end
+
+    % Build the list of measured segments to annotate and summarize.
+    function segmentEntries = buildSolutionSegmentEntries(result, frameIndex)
+        segmentEntries = repmat(struct("label", "", "p1", [0 0], "p2", [0 0], "color", [0 0 0]), 0, 1);
+
+        A = getFramePoint(result, "A", frameIndex);
+        B = getFramePoint(result, "B", frameIndex);
+        C = getFramePoint(result, "C", frameIndex);
+        D = getFramePoint(result, "D", frameIndex);
+        E = getFramePoint(result, "E", frameIndex);
+        F = getFramePoint(result, "F", frameIndex);
+        J = getFramePoint(result, "J", frameIndex);
+        SB = getFramePoint(result, "sliderB", frameIndex);
+        SC = getFramePoint(result, "sliderC", frameIndex);
+        P = getFramePoint(result, "P", frameIndex);
+
+        addSegment("Ground AD", A, D, [0.2 0.2 0.2]);
+
+        switch result.mechanismMode
+            case 'standard_fourbar'
+                addSegment("Crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Coupler BC", B, C, [0.95 0.65 0.1]);
+                addSegment("Rocker CD", C, D, [0.45 0.2 0.7]);
+                addSegment("Trace offset", getTraceBasePoint(result, frameIndex), P, [0.65 0.4 0.3]);
+
+            case {'slider_fourbar', 'fourbar', 'advanced_fourbar'}
+                addSegment("Crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Coupler BC", B, C, [0.95 0.65 0.1]);
+                addSegment("Rocker CD", C, D, [0.45 0.2 0.7]);
+                [railB, railC] = getSliderRailSegments(result, frameIndex);
+                addSegment("Rail B", railB(1, :), railB(2, :), [0.1 0.55 0.2]);
+                addSegment("Rail C", railC(1, :), railC(2, :), [0.45 0.2 0.7]);
+                addSegment("Slider connector", SB, SC, [0.65 0.4 0.3]);
+                addSegment("Offset B", B, SB, [0.1 0.55 0.2]);
+                addSegment("Offset C", C, SC, [0.45 0.2 0.7]);
+                if ~strcmp(result.mechanismMode, 'advanced_fourbar')
+                    addSegment("Trace offset", getTraceBasePoint(result, frameIndex), P, [0.65 0.4 0.3]);
+                end
+
+            case 'fivebar'
+                addSegment("Left crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Right crank DC", D, C, [0.45 0.2 0.7]);
+                addSegment("Left distal BE", B, E, [0.95 0.65 0.1]);
+                addSegment("Right distal CE", C, E, [0.2 0.55 0.8]);
+                addSegment("Trace offset", getTraceBasePoint(result, frameIndex), P, [0.65 0.4 0.3]);
+
+            case 'advanced_fivebar'
+                addSegment("Left crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Right crank DC", D, C, [0.45 0.2 0.7]);
+                addSegment("Left distal BE", B, E, [0.95 0.65 0.1]);
+                addSegment("Right distal CE", C, E, [0.2 0.55 0.8]);
+                addSegment("Left slider", E, SB, [0.95 0.65 0.1]);
+                addSegment("Right slider", E, SC, [0.2 0.55 0.8]);
+                addSegment("Slider connector", SB, SC, [0.65 0.4 0.3]);
+
+            case 'sixbar'
+                addSegment("Crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Coupler BC", B, C, [0.95 0.65 0.1]);
+                addSegment("Rocker CD", C, D, [0.45 0.2 0.7]);
+                addSegment("Coupler split BJ", B, J, [0.85 0.72 0.35]);
+                addSegment("Coupler split JC", J, C, [0.85 0.72 0.35]);
+                addSegment("Aux coupler JE", J, E, [0.2 0.55 0.8]);
+                addSegment("Aux rocker FE", F, E, [0.8 0.35 0.2]);
+                addSegment("Trace offset", getTraceBasePoint(result, frameIndex), P, [0.6 0.5 0.35]);
+
+            case 'advanced_sixbar'
+                addSegment("Crank AB", A, B, [0.1 0.55 0.2]);
+                addSegment("Coupler BC", B, C, [0.95 0.65 0.1]);
+                addSegment("Rocker CD", C, D, [0.45 0.2 0.7]);
+                addSegment("Coupler split BJ", B, J, [0.85 0.72 0.35]);
+                addSegment("Coupler split JC", J, C, [0.85 0.72 0.35]);
+                addSegment("Aux coupler JE", J, E, [0.2 0.55 0.8]);
+                addSegment("Aux rocker FE", F, E, [0.8 0.35 0.2]);
+                addSegment("J slider", J, SB, [0.2 0.55 0.8]);
+                addSegment("F slider", F, SC, [0.8 0.35 0.2]);
+                addSegment("Slider connector", SB, SC, [0.65 0.4 0.3]);
+        end
+
+        function addSegment(labelText, p1, p2, colorValue)
+            if any(isnan([p1, p2]))
+                return;
+            end
+            segmentEntries(end + 1, 1) = struct( ...
+                "label", labelText, ...
+                "p1", p1, ...
+                "p2", p2, ...
+                "color", colorValue);
+        end
+    end
+
+    % Return a single point from a result struct or NaNs if unavailable.
+    function point = getFramePoint(result, fieldName, frameIndex)
+        point = [nan, nan];
+        if strcmp(fieldName, "P")
+            fieldValue = result.path;
+        elseif ~isfield(result, fieldName)
+            return;
+        else
+            fieldValue = result.(fieldName);
+        end
+        if size(fieldValue, 1) < frameIndex || size(fieldValue, 2) < 2
+            return;
+        end
+
+        point = fieldValue(frameIndex, 1:2);
+    end
+
+    % Identify which named joints are fixed grounds for the current mode.
+    function groundLabels = getGroundPointLabels(result)
+        switch result.mechanismMode
+            case {'sixbar', 'advanced_sixbar'}
+                groundLabels = {'A', 'D', 'F'};
+            otherwise
+                groundLabels = {'A', 'D'};
+        end
+    end
+
+    % Recover the slider rail endpoints for the slider-based four-bar modes.
+    function [railB, railC] = getSliderRailSegments(result, frameIndex)
+        railB = [nan, nan; nan, nan];
+        railC = [nan, nan; nan, nan];
+
+        B = getFramePoint(result, "B", frameIndex);
+        C = getFramePoint(result, "C", frameIndex);
+        if any(isnan([B, C])) || ~isfield(result, "params")
+            return;
+        end
+
+        direction = C - B;
+        directionNorm = norm(direction);
+        if directionNorm < 1e-10
+            return;
+        end
+
+        ux = direction / directionNorm;
+        uy = [-ux(2), ux(1)];
+        railDirB = cos(result.params.sliderAngleB) * ux + sin(result.params.sliderAngleB) * uy;
+        railDirC = cos(result.params.sliderAngleC) * ux + sin(result.params.sliderAngleC) * uy;
+        railB = [ ...
+            B - result.params.sliderRailHalfLengthB * railDirB; ...
+            B + result.params.sliderRailHalfLengthB * railDirB];
+        railC = [ ...
+            C - result.params.sliderRailHalfLengthC * railDirC; ...
+            C + result.params.sliderRailHalfLengthC * railDirC];
+    end
+
+    % Recover the base point from which the trace offset to P is measured.
+    function traceBase = getTraceBasePoint(result, frameIndex)
+        traceBase = [nan, nan];
+        if ~isfield(result, "params")
+            return;
+        end
+
+        switch result.mechanismMode
+            case 'standard_fourbar'
+                B = getFramePoint(result, "B", frameIndex);
+                C = getFramePoint(result, "C", frameIndex);
+                if any(isnan([B, C]))
+                    return;
+                end
+                theta = getResultAngleAtFrame(result, frameIndex, "inputAngles");
+                traceBlend = result.params.traceBlend;
+                if isfinite(theta)
+                    traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
+                end
+                traceBase = (1 - traceBlend) * B + traceBlend * C;
+
+            case {'slider_fourbar', 'fourbar'}
+                SB = getFramePoint(result, "sliderB", frameIndex);
+                SC = getFramePoint(result, "sliderC", frameIndex);
+                if any(isnan([SB, SC]))
+                    return;
+                end
+                theta = getResultAngleAtFrame(result, frameIndex, "inputAngles");
+                traceBlend = result.params.traceBlend;
+                if isfinite(theta)
+                    traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
+                end
+                traceBase = (1 - traceBlend) * SB + traceBlend * SC;
+
+            case 'fivebar'
+                B = getFramePoint(result, "B", frameIndex);
+                C = getFramePoint(result, "C", frameIndex);
+                E = getFramePoint(result, "E", frameIndex);
+                if any(isnan([B, C, E]))
+                    return;
+                end
+                theta = getResultAngleAtFrame(result, frameIndex, "leftInputAngles");
+                traceBlend = result.params.traceBlend;
+                if isfinite(theta)
+                    traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
+                end
+                traceBase = (1 - traceBlend) * E + traceBlend * (0.5 * (B + C));
+
+            case 'sixbar'
+                J = getFramePoint(result, "J", frameIndex);
+                E = getFramePoint(result, "E", frameIndex);
+                if any(isnan([J, E]))
+                    return;
+                end
+                theta = getResultAngleAtFrame(result, frameIndex, "inputAngles");
+                traceBlend = result.params.traceBlend;
+                if isfinite(theta)
+                    traceBlend = min(max(result.params.traceBlend + result.params.traceBlendAmp * sin(theta + result.params.traceBlendPhase), 0), 1);
+                end
+                traceBase = (1 - traceBlend) * J + traceBlend * E;
+        end
+    end
+
+    % Build the summary lines shown in the solution popup.
+    function lines = buildSolutionSummaryLines(result, frameIndex, solutionData)
+        lines = { ...
+            sprintf("Mechanism: %s", mechanismModeToLabel(result.mechanismMode)); ...
+            sprintf("RMS error: %.5f", result.rmsError); ...
+            sprintf("Displayed frame: %d", frameIndex); ...
+            ' '; ...
+            'Joint Coordinates'};
+
+        idx = 1;
+        while idx <= numel(solutionData.pointEntries)
+            entry = solutionData.pointEntries(idx);
+            labelText = entry.label;
+            if entry.isGround
+                labelText = sprintf("%s (ground)", entry.label);
+            end
+            lines{end + 1, 1} = sprintf("%s = [%.4f, %.4f]", labelText, entry.point(1), entry.point(2));
+            idx = idx + 1;
+        end
+
+        lines{end + 1, 1} = ' ';
+        lines{end + 1, 1} = 'Dimensions';
+        idx = 1;
+        while idx <= numel(solutionData.segmentEntries)
+            entry = solutionData.segmentEntries(idx);
+            lines{end + 1, 1} = sprintf("%s = %.4f", entry.label, norm(entry.p2 - entry.p1));
+            idx = idx + 1;
+        end
+    end
+
+    % Sanitize a title-like label into a filesystem-friendly file stem.
+    function fileStem = sanitizeFileLabel(label)
+        fileStem = lower(regexprep(char(label), '[^a-zA-Z0-9]+', '_'));
+        fileStem = regexprep(fileStem, '^_+|_+$', '');
+        if isempty(fileStem)
+            fileStem = 'linkage';
+        end
     end
 
     % Read all editable GUI settings into a single options structure.
@@ -2996,6 +3686,16 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
         index = firstValid;
     end
 
+    % Return all valid frame indices for a solved mechanism result.
+    function validFrames = getValidFrameIndices(result)
+        validFrames = [];
+        if isempty(result) || ~isfield(result, "path") || isempty(result.path)
+            return;
+        end
+
+        validFrames = find(~any(isnan(result.path), 2));
+    end
+
     % Recover the input angle associated with a displayed animation frame.
     function angleValue = getResultAngleAtFrame(result, frameIndex, angleField)
         angleValue = nan;
@@ -3402,12 +4102,20 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
     % Enable/disable run controls while a solve is active.
     function setBusyState(isBusy)
         if isBusy
-            set(state.controls.runButton, "Enable", "off");
-            set(state.controls.stopButton, "Enable", "on");
+            if isfield(state.controls, "runButton") && isgraphics(state.controls.runButton)
+                set(state.controls.runButton, "Enable", "off");
+            end
+            if isfield(state.controls, "stopButton") && isgraphics(state.controls.stopButton)
+                set(state.controls.stopButton, "Enable", "on");
+            end
             setStatus("running");
         else
-            set(state.controls.runButton, "Enable", "on");
-            set(state.controls.stopButton, "Enable", "off");
+            if isfield(state.controls, "runButton") && isgraphics(state.controls.runButton)
+                set(state.controls.runButton, "Enable", "on");
+            end
+            if isfield(state.controls, "stopButton") && isgraphics(state.controls.stopButton)
+                set(state.controls.stopButton, "Enable", "off");
+            end
             setStatus("idle");
         end
         updateSaveGifButtonState();
@@ -3415,16 +4123,22 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
 
     % Keep the GIF export button enabled only when a valid result exists.
     function updateSaveGifButtonState()
-        if ~isfield(state.controls, "saveGifButton") || ~isgraphics(state.controls.saveGifButton)
-            return;
+        hasValidResult = ~state.isRunning && ~isempty(state.bestResult) && ~isempty(getValidFrameIndices(state.bestResult));
+
+        if isfield(state.controls, "saveGifButton") && isgraphics(state.controls.saveGifButton)
+            if hasValidResult
+                set(state.controls.saveGifButton, "Enable", "on");
+            else
+                set(state.controls.saveGifButton, "Enable", "off");
+            end
         end
 
-        hasValidResult = ~state.isRunning && ~isempty(state.bestResult) && isfield(state.bestResult, "path") ...
-            && any(~any(isnan(state.bestResult.path), 2));
-        if hasValidResult
-            set(state.controls.saveGifButton, "Enable", "on");
-        else
-            set(state.controls.saveGifButton, "Enable", "off");
+        if isfield(state.controls, "seeSolutionButton") && isgraphics(state.controls.seeSolutionButton)
+            if hasValidResult
+                set(state.controls.seeSolutionButton, "Enable", "on");
+            else
+                set(state.controls.seeSolutionButton, "Enable", "off");
+            end
         end
     end
 
@@ -3474,6 +4188,7 @@ logMessage("App ready. Click Select Path Points to sketch a new trajectory.");
     % Stop any active run and close the figure window.
     function onCloseFigure(~, ~)
         state.stopRequested = true;
+        closeSolutionWindow();
         delete(state.fig);
     end
 end
