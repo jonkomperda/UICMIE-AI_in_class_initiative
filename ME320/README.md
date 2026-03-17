@@ -6,11 +6,15 @@
 The app lets you:
 
 - draw or load a target path
+- start from an empty manual-drawing canvas
 - choose a mechanism family
 - tune GA settings such as population, generations, mutation, crossover, elites, tournament size, workers, and target RMSE
 - choose whether the tracing point is fixed or allowed to move during the cycle
 - watch the linkage evolve during optimization
 - play the final mechanism animation
+- save the final animation as a GIF
+- inspect an annotated static solution view for reproduction in other software
+- save the annotated solution view as an image
 
 ## Running the app
 
@@ -47,6 +51,7 @@ The left control panel contains the solver inputs and run controls.
 
 - `Example Menu`
   Chooses one of the built-in target paths.
+  `Empty Shape` clears the canvas and prepares the app for manual drawing.
 
 - `Load`
   Loads the selected example path.
@@ -101,6 +106,9 @@ The left control panel contains the solver inputs and run controls.
 - `Frame Pause (s)`
   Delay between animation frames.
 
+- `Save GIF`
+  Exports the final animation as a GIF using the current animation cycle count and frame pause.
+
 ## Genetic algorithm controls
 
 - `Population`
@@ -136,16 +144,35 @@ The left control panel contains the solver inputs and run controls.
 - `Stop`
   Requests a graceful stop after the current generation completes.
 
+- `See Solution`
+  Opens a separate annotated solution window after a valid mechanism has been found.
+
 - `Status`
   Shows whether the app is idle, running, or stalled.
 
 - `Event Log`
   Timestamped messages about solver progress, retries, and final results.
 
+## Solution window
+
+After a successful run, `See Solution` opens a separate figure that shows:
+
+- a deterministic static linkage configuration taken from the first valid solved frame
+- joint labels such as `A`, `B`, `C`, `D`, `E`, `F`, `J`, `SB`, `SC`, and `P` when present
+- ground annotations and labeled bar/connector dimensions
+- slider rail and slider offset dimensions for slider-based mechanisms
+- a compact summary panel with joint coordinates, measured lengths, and RMS error
+
+The solution window also includes:
+
+- `Save`
+  Saves the annotated linkage view as a PNG image
+
 ## Built-in shapes
 
 The app currently includes:
 
+- `Empty Shape`
 - `Ellipse`
 - `Circle`
 - `Rounded Rectangle`
@@ -157,7 +184,7 @@ The app currently includes:
 - `Bean`
 - `S Curve`
 
-Most of these are closed loops. `S Curve` is open.
+Most of these are closed loops. `Empty Shape` and `S Curve` are open.
 
 ## Mechanism families
 
@@ -442,4 +469,3 @@ Reasonable default starting points:
 - Moving-trace mode usually helps with more interesting shapes.
 - Advanced slider-enhanced mechanisms provide more flexibility, but they also increase search difficulty, more stalling, and take way longer to compute.
 - More complex mechanisms usually benefit from larger populations and more generations.
-
