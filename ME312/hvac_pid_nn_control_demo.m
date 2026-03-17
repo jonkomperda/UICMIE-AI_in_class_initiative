@@ -1,29 +1,28 @@
 function hvac_pid_nn_control_demo
-% HVAC control teaching demo with thermostat and PID comparison.
+% HVAC control teaching demo with thermostat, PID, and NN comparison.
 % The app lets users define an outdoor temperature profile, then compares
-% a basic hysteresis thermostat against a cooling-only PID controller on
-% the same room model.
-%
-% High-level workflow:
-% 1. Load a built-in ambient profile or click points to create one.
-% 2. Set thermostat, room-model, and PID parameters.
-% 3. Simulate both controllers over the same 24-hour window.
-% 4. Compare temperatures, controller effort, and summary metrics.
+% three cooling controllers on the same room model:
+% 1. A basic hysteresis thermostat
+% 2. A PID controller
+% 3. A neural-network controller trained to imitate PID duty-cycle output
 
 state = struct();
 state.timeHours = 0:(1 / 12):24;  % 5-minute step over one day.
 state.profilePoints = zeros(0, 2);
-state.profileSource = "manual";
-state.currentProfileName = "Custom";
+state.profileSource = 'manual';
+state.currentProfileName = 'Custom';
 state.lastResults = [];
 state.isSelecting = false;
 state.exampleLibrary = getExampleLibrary();
 state.colors = getPlotColors();
+state.nnModel = createEmptyNnModel();
 
 buildUi();
+attachCallbacks();
 loadExampleProfile(1);
+refreshNnPanel();
 setStatus("idle");
-logMessage("App ready. Load an example or enable Select Points to sketch a custom ambient profile.");
+logMessage("App ready. Load an example, train the NN if needed, or sketch a custom ambient profile.");
 
     function buildUi()
         figColor = [0.95 0.96 0.98];
@@ -39,7 +38,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "DefaultAxesXColor", [0 0 0], ...
             "DefaultAxesYColor", [0 0 0], ...
             "DefaultTextColor", [0 0 0], ...
-            "Position", [60 60 1480 820], ...
+            "Position", [40 40 1600 860], ...
             "WindowButtonDownFcn", @onFigureClick, ...
             "CloseRequestFcn", @onCloseFigure);
 
@@ -49,12 +48,12 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "FontSize", 11, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", panelColor, ...
-            "Position", [0.015 0.03 0.24 0.94]);
+            "Position", [0.015 0.03 0.22 0.94]);
 
         state.ambientAxes = axes( ...
             "Parent", state.fig, ...
             "Units", "normalized", ...
-            "Position", [0.29 0.11 0.29 0.81], ...
+            "Position", [0.26 0.12 0.24 0.80], ...
             "Box", "on");
         title(state.ambientAxes, "Ambient Temperature Profile");
         xlabel(state.ambientAxes, "Time (hours)");
@@ -65,13 +64,21 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.resultsAxes = axes( ...
             "Parent", state.fig, ...
             "Units", "normalized", ...
-            "Position", [0.63 0.11 0.33 0.81], ...
+            "Position", [0.53 0.12 0.24 0.80], ...
             "Box", "on");
         title(state.resultsAxes, "Controller Comparison");
         xlabel(state.resultsAxes, "Time (hours)");
         ylabel(state.resultsAxes, "Temperature (degF)");
         grid(state.resultsAxes, "on");
         styleAxes(state.resultsAxes);
+
+        state.nnPanel = uipanel( ...
+            "Parent", state.fig, ...
+            "Title", "NN Controls", ...
+            "FontSize", 11, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor, ...
+            "Position", [0.80 0.03 0.185 0.94]);
 
         y = 0.93;
         dy = 0.041;
@@ -150,17 +157,17 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         y = y - 0.055;
 
         state.controls.initialIndoor = createLabeledEdit( ...
-            "Initial Indoor (degF)", "76", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Initial Indoor (degF)", "76", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Indoor temperature at the beginning of the simulation.");
         y = y - (dy + 0.004);
 
         state.controls.roomRate = createLabeledEdit( ...
-            "Room Response (1/hr)", "0.20", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Room Response (1/hr)", "0.20", y, leftX, editX, editW, labelHeight, editHeight, ...
             "How strongly the room temperature drifts toward the ambient temperature.");
         y = y - (dy + 0.004);
 
         state.controls.coolingStrength = createLabeledEdit( ...
-            "AC Cooling (degF/hr)", "4.0", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "AC Cooling (degF/hr)", "4.0", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Maximum cooling power applied when the controller command is 1.");
         y = y - (dy + 0.014);
 
@@ -188,12 +195,12 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         y = y - 0.055;
 
         state.controls.setpoint = createLabeledEdit( ...
-            "Setpoint (degF)", "74", y, leftX, editX, editW, labelHeight, editHeight, ...
-            "Shared target temperature used by both controllers.");
+            state.controlsPanel, "Setpoint (degF)", "74", y, leftX, editX, editW, labelHeight, editHeight, ...
+            "Shared target temperature used by all controllers.");
         y = y - (dy + 0.004);
 
         state.controls.deadband = createLabeledEdit( ...
-            "Deadband (degF)", "3.0", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Deadband (degF)", "3.0", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Thermostat hysteresis width. Larger values reduce switching chatter.");
         y = y - (dy + 0.014);
 
@@ -221,17 +228,17 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         y = y - 0.055;
 
         state.controls.pidKp = createLabeledEdit( ...
-            "Kp", "0.55", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Kp", "0.55", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Proportional gain for the cooling-only PID controller.");
         y = y - (dy + 0.004);
 
         state.controls.pidKi = createLabeledEdit( ...
-            "Ki", "0.10", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Ki", "0.10", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Integral gain for the cooling-only PID controller.");
         y = y - (dy + 0.004);
 
         state.controls.pidKd = createLabeledEdit( ...
-            "Kd", "0.02", y, leftX, editX, editW, labelHeight, editHeight, ...
+            state.controlsPanel, "Kd", "0.02", y, leftX, editX, editW, labelHeight, editHeight, ...
             "Derivative gain for the cooling-only PID controller.");
         y = y - (dy + 0.004);
 
@@ -250,7 +257,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Style", "popupmenu", ...
             "Units", "normalized", ...
             "Position", [editX y editW editHeight], ...
-            "String", {"Duty Cycle", "Two Stage"}, ...
+            "String", {'Duty Cycle', 'Two Stage'}, ...
             "Value", 1, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", "white", ...
@@ -266,7 +273,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "FontWeight", "bold", ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", [0.8 0.8 0.8], ...
-            "TooltipString", "Run both controllers on the current ambient profile.", ...
+            "TooltipString", "Run all enabled controllers on the current ambient profile.", ...
             "Callback", @onRunSimulation);
 
         state.controls.animateCheckbox = uicontrol( ...
@@ -284,7 +291,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Parent", state.controlsPanel, ...
             "Style", "text", ...
             "Units", "normalized", ...
-            "Position", [0.05 0.165 0.84 0.028], ...
+            "Position", [0.05 0.170 0.84 0.028], ...
             "String", "Run Statistics", ...
             "FontWeight", "bold", ...
             "HorizontalAlignment", "left", ...
@@ -295,10 +302,10 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Parent", state.controlsPanel, ...
             "Style", "text", ...
             "Units", "normalized", ...
-            "Position", [0.05 0.070 0.39 0.085], ...
+            "Position", [0.05 0.080 0.39 0.082], ...
             "String", getEmptyThermostatStatsText(), ...
             "HorizontalAlignment", "left", ...
-            "FontSize", 8.5, ...
+            "FontSize", 8.3, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", panelColor);
 
@@ -306,10 +313,10 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Parent", state.controlsPanel, ...
             "Style", "text", ...
             "Units", "normalized", ...
-            "Position", [0.49 0.070 0.39 0.085], ...
+            "Position", [0.49 0.080 0.39 0.082], ...
             "String", getEmptyPidStatsText(), ...
             "HorizontalAlignment", "left", ...
-            "FontSize", 8.5, ...
+            "FontSize", 8.3, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", panelColor);
 
@@ -317,9 +324,159 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Parent", state.controlsPanel, ...
             "Style", "text", ...
             "Units", "normalized", ...
-            "Position", [0.05 0.015 0.85 0.025], ...
+            "Position", [0.05 0.020 0.85 0.026], ...
             "String", "Status: idle", ...
             "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+
+        nnY = 0.92;
+        nnDy = 0.046;
+        nnEditHeight = 0.038;
+        nnLabelHeight = 0.026;
+        nnLeftX = 0.08;
+        nnEditX = 0.64;
+        nnEditW = 0.22;
+
+        state.controls.nnEnabled = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "checkbox", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.34 0.04], ...
+            "String", "Enable", ...
+            "Value", 0, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor, ...
+            "TooltipString", "Enable or disable the neural-network controller.");
+
+        state.controls.trainNnButton = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "pushbutton", ...
+            "Units", "normalized", ...
+            "Position", [0.50 nnY - 0.003 0.36 0.043], ...
+            "String", "Train NN", ...
+            "FontWeight", "bold", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", [0.8 0.8 0.8], ...
+            "TooltipString", "Train the neural-network controller using PID duty-cycle targets.", ...
+            "Callback", @onTrainNn);
+        nnY = nnY - (nnDy + 0.010);
+
+        uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.84 0.035], ...
+            "String", "NN Features", ...
+            "FontWeight", "bold", ...
+            "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+        nnY = nnY - 0.046;
+
+        state.controls.nnUseError = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "checkbox", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.78 0.04], ...
+            "String", "Temp Error (required)", ...
+            "Value", 1, ...
+            "Enable", "off", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+        nnY = nnY - nnDy;
+
+        state.controls.nnUseAmbient = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "checkbox", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.68 0.04], ...
+            "String", "Ambient Temp", ...
+            "Value", 0, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor, ...
+            "TooltipString", "Add outdoor temperature as an NN input feature.");
+        nnY = nnY - nnDy;
+
+        state.controls.nnUseTrend = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "checkbox", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.68 0.04], ...
+            "String", "Error Trend", ...
+            "Value", 0, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor, ...
+            "TooltipString", "Add error trend as an NN input feature.");
+        nnY = nnY - (nnDy + 0.008);
+
+        uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 nnY 0.84 0.035], ...
+            "String", "Training Settings", ...
+            "FontWeight", "bold", ...
+            "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+        nnY = nnY - 0.052;
+
+        state.controls.nnHiddenNeurons = createLabeledEdit( ...
+            state.nnPanel, "Hidden Neurons", "8", nnY, nnLeftX, nnEditX, nnEditW, nnLabelHeight, nnEditHeight, ...
+            "Number of neurons in the hidden layer.");
+        nnY = nnY - nnDy;
+
+        state.controls.nnLearningRate = createLabeledEdit( ...
+            state.nnPanel, "Learning Rate", "0.03", nnY, nnLeftX, nnEditX, nnEditW, nnLabelHeight, nnEditHeight, ...
+            "Batch-gradient-descent learning rate.");
+        nnY = nnY - nnDy;
+
+        state.controls.nnEpochs = createLabeledEdit( ...
+            state.nnPanel, "Epochs", "300", nnY, nnLeftX, nnEditX, nnEditW, nnLabelHeight, nnEditHeight, ...
+            "Number of training passes through the PID-imitation dataset.");
+
+        uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 0.42 0.84 0.035], ...
+            "String", "Training Summary", ...
+            "FontWeight", "bold", ...
+            "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+
+        state.controls.nnSummaryBox = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 0.275 0.82 0.14], ...
+            "String", getEmptyNnSummaryText(), ...
+            "HorizontalAlignment", "left", ...
+            "FontSize", 8.6, ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+
+        uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 0.205 0.84 0.035], ...
+            "String", "NN Run Statistics", ...
+            "FontWeight", "bold", ...
+            "HorizontalAlignment", "left", ...
+            "ForegroundColor", [0 0 0], ...
+            "BackgroundColor", panelColor);
+
+        state.controls.nnStatsBox = uicontrol( ...
+            "Parent", state.nnPanel, ...
+            "Style", "text", ...
+            "Units", "normalized", ...
+            "Position", [0.08 0.075 0.82 0.12], ...
+            "String", getEmptyNnStatsText(), ...
+            "HorizontalAlignment", "left", ...
+            "FontSize", 8.6, ...
             "ForegroundColor", [0 0 0], ...
             "BackgroundColor", panelColor);
 
@@ -327,7 +484,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Parent", state.fig, ...
             "Style", "text", ...
             "Units", "normalized", ...
-            "Position", [0.70 0.01 0.27 0.025], ...
+            "Position", [0.61 0.01 0.36 0.025], ...
             "String", "Prof. Jon Komperda, University of Illinois Chicago, 2026", ...
             "HorizontalAlignment", "right", ...
             "ForegroundColor", [0 0 0], ...
@@ -338,19 +495,20 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         updateMetricsBox();
     end
 
-    function editHandle = createLabeledEdit(labelText, defaultValue, yPos, lx, ex, ew, lh, eh, tooltipText)
+    function editHandle = createLabeledEdit(parentHandle, labelText, defaultValue, yPos, lx, ex, ew, lh, eh, tooltipText)
+        backgroundColor = get(parentHandle, "BackgroundColor");
         uicontrol( ...
-            "Parent", state.controlsPanel, ...
+            "Parent", parentHandle, ...
             "Style", "text", ...
             "Units", "normalized", ...
             "Position", [lx yPos + 0.010 0.52 lh], ...
             "String", labelText, ...
             "HorizontalAlignment", "left", ...
             "ForegroundColor", [0 0 0], ...
-            "BackgroundColor", get(state.controlsPanel, "BackgroundColor"));
+            "BackgroundColor", backgroundColor);
 
         editHandle = uicontrol( ...
-            "Parent", state.controlsPanel, ...
+            "Parent", parentHandle, ...
             "Style", "edit", ...
             "Units", "normalized", ...
             "Position", [ex yPos ew eh], ...
@@ -360,6 +518,22 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "TooltipString", tooltipText);
     end
 
+    function attachCallbacks()
+        set(state.controls.setpoint, "Callback", @(~, ~) onNnTeacherSettingChanged("Setpoint changed. The NN model may be out of date."));
+        set(state.controls.initialIndoor, "Callback", @(~, ~) onNnTeacherSettingChanged("Initial indoor temperature changed. The NN model may be out of date."));
+        set(state.controls.roomRate, "Callback", @(~, ~) onNnTeacherSettingChanged("Room response changed. The NN model may be out of date."));
+        set(state.controls.coolingStrength, "Callback", @(~, ~) onNnTeacherSettingChanged("Cooling strength changed. The NN model may be out of date."));
+        set(state.controls.pidKp, "Callback", @(~, ~) onNnTeacherSettingChanged("PID gains changed. The NN model may be out of date."));
+        set(state.controls.pidKi, "Callback", @(~, ~) onNnTeacherSettingChanged("PID gains changed. The NN model may be out of date."));
+        set(state.controls.pidKd, "Callback", @(~, ~) onNnTeacherSettingChanged("PID gains changed. The NN model may be out of date."));
+
+        set(state.controls.nnUseAmbient, "Callback", @(~, ~) onNnFeatureSelectionChanged("NN feature selection changed. Retraining is recommended."));
+        set(state.controls.nnUseTrend, "Callback", @(~, ~) onNnFeatureSelectionChanged("NN feature selection changed. Retraining is recommended."));
+        set(state.controls.nnHiddenNeurons, "Callback", @(~, ~) onNnHyperparameterChanged("NN hidden neurons changed. Retraining is recommended."));
+        set(state.controls.nnLearningRate, "Callback", @(~, ~) onNnHyperparameterChanged("NN learning rate changed. Retraining is recommended."));
+        set(state.controls.nnEpochs, "Callback", @(~, ~) onNnHyperparameterChanged("NN epochs changed. Retraining is recommended."));
+    end
+
     function onLoadExample(~, ~)
         loadExampleProfile(get(state.controls.exampleMenu, "Value"));
     end
@@ -367,7 +541,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
     function loadExampleProfile(exampleIndex)
         exampleProfile = state.exampleLibrary(exampleIndex);
         state.profilePoints = exampleProfile.points;
-        state.profileSource = "example";
+        state.profileSource = 'example';
         state.currentProfileName = exampleProfile.name;
         state.lastResults = [];
         refreshAmbientPlot();
@@ -396,8 +570,8 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         end
 
         state.profilePoints(end, :) = [];
-        state.profileSource = "manual";
-        state.currentProfileName = "Custom";
+        state.profileSource = 'manual';
+        state.currentProfileName = 'Custom';
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
@@ -414,8 +588,8 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
     function onClearProfile(~, ~)
         state.profilePoints = zeros(0, 2);
-        state.profileSource = "manual";
-        state.currentProfileName = "Custom";
+        state.profileSource = 'manual';
+        state.currentProfileName = 'Custom';
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
@@ -426,7 +600,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
     function onRunSimulation(~, ~)
         try
-            params = readSimulationParameters();
+            params = readAppParameters(true, true);
             ambientProfile = buildAmbientProfile();
             results = simulateControllers(ambientProfile, params);
         catch exception
@@ -438,20 +612,38 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         state.lastResults = results;
         refreshResultsPlot();
         updateMetricsBox();
+        refreshNnPanel();
 
         setStatus("simulation complete");
-        if results.thermostatEnabled && results.pidEnabled
+        try
+            summaryMessage = buildSimulationSummary(results);
+        catch
+            summaryMessage = sprintf('Simulation complete for %s.', char(results.profileName));
+        end
+        logMessage(summaryMessage);
+    end
+
+    function onTrainNn(~, ~)
+        try
+            setStatus("training nn");
+            drawnow;
+
+            params = readAppParameters(false, false);
+            trainingSettings = readNnTrainingSettings();
+            featureFlags = readNnFeatureFlagsFromUi();
+            trainingProfiles = getTrainingProfiles();
+            [trainingInputs, trainingTargets] = buildNnTrainingDataset(trainingProfiles, params, featureFlags);
+            state.nnModel = trainNeuralNetwork(trainingInputs, trainingTargets, featureFlags, trainingSettings);
+
+            refreshNnPanel();
+            setStatus("nn trained");
             logMessage(sprintf( ...
-                "Simulation complete for %s. Thermostat avg %.1f degF, PID avg %.1f degF (%s mode).", ...
-                ambientProfile.name, results.thermostatAverageIndoor, results.pidAverageIndoor, results.pidModeLabel));
-        elseif results.thermostatEnabled
-            logMessage(sprintf( ...
-                "Simulation complete for %s. Thermostat avg %.1f degF.", ...
-                ambientProfile.name, results.thermostatAverageIndoor));
-        else
-            logMessage(sprintf( ...
-                "Simulation complete for %s. PID avg %.1f degF (%s mode).", ...
-                ambientProfile.name, results.pidAverageIndoor, results.pidModeLabel));
+                "NN training complete. Final loss %.5f using %s.", ...
+                state.nnModel.loss, char(state.nnModel.featureSummary)));
+        catch exception
+            refreshNnPanel();
+            setStatus("nn training blocked");
+            logMessage(exception.message);
         end
     end
 
@@ -478,8 +670,8 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
         xPoint = min(max(xPoint, 0), 24);
         state.profilePoints = appendOrReplacePoint(state.profilePoints, [xPoint yPoint]);
-        state.profileSource = "manual";
-        state.currentProfileName = "Custom";
+        state.profileSource = 'manual';
+        state.currentProfileName = 'Custom';
         state.lastResults = [];
         refreshAmbientPlot();
         refreshResultsPlot();
@@ -492,6 +684,21 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         if ishandle(state.fig)
             delete(state.fig);
         end
+    end
+
+    function onNnFeatureSelectionChanged(messageText)
+        markNnModelStale(messageText);
+        refreshNnPanel();
+    end
+
+    function onNnHyperparameterChanged(messageText)
+        markNnModelStale(messageText);
+        refreshNnPanel();
+    end
+
+    function onNnTeacherSettingChanged(messageText)
+        markNnModelStale(messageText);
+        refreshNnPanel();
     end
 
     function points = appendOrReplacePoint(points, newPoint)
@@ -509,10 +716,11 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         end
     end
 
-    function params = readSimulationParameters()
+    function params = readAppParameters(requireEnabledController, requireTrainedNn)
         params = struct();
         params.enableThermostat = logical(get(state.controls.thermostatEnabled, "Value"));
         params.enablePid = logical(get(state.controls.pidEnabled, "Value"));
+        params.enableNn = logical(get(state.controls.nnEnabled, "Value"));
         params.setpoint = readScalarField(state.controls.setpoint, "Setpoint");
         params.deadband = readScalarField(state.controls.deadband, "Deadband");
         params.initialIndoor = readScalarField(state.controls.initialIndoor, "Initial indoor temperature");
@@ -524,8 +732,12 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         params.pidModeIndex = get(state.controls.pidMode, "Value");
         params.pidModeLabel = getSelectedPopupString(state.controls.pidMode);
 
-        if ~params.enableThermostat && ~params.enablePid
+        if requireEnabledController && ~params.enableThermostat && ~params.enablePid && ~params.enableNn
             error("Enable at least one controller before running the simulation.");
+        end
+
+        if params.enableNn && requireTrainedNn && ~state.nnModel.isReady
+            error("Train the NN controller before enabling it for simulation.");
         end
 
         if params.deadband <= 0
@@ -545,6 +757,28 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         end
     end
 
+    function settings = readNnTrainingSettings()
+        settings = struct();
+        settings.hiddenNeurons = readScalarField(state.controls.nnHiddenNeurons, "Hidden neurons");
+        settings.learningRate = readScalarField(state.controls.nnLearningRate, "Learning rate");
+        settings.epochs = readScalarField(state.controls.nnEpochs, "Epochs");
+
+        if settings.hiddenNeurons < 1 || abs(settings.hiddenNeurons - round(settings.hiddenNeurons)) > 1e-9
+            error("Hidden neurons must be a positive integer.");
+        end
+
+        if settings.learningRate <= 0
+            error("Learning rate must be positive.");
+        end
+
+        if settings.epochs < 1 || abs(settings.epochs - round(settings.epochs)) > 1e-9
+            error("Epochs must be a positive integer.");
+        end
+
+        settings.hiddenNeurons = round(settings.hiddenNeurons);
+        settings.epochs = round(settings.epochs);
+    end
+
     function numericValue = readScalarField(controlHandle, fieldLabel)
         numericValue = str2double(get(controlHandle, "String"));
         if ~isfinite(numericValue)
@@ -562,12 +796,34 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         end
     end
 
+    function featureFlags = readNnFeatureFlagsFromUi()
+        featureFlags = struct();
+        featureFlags.useError = true;
+        featureFlags.useAmbient = logical(get(state.controls.nnUseAmbient, "Value"));
+        featureFlags.useTrend = logical(get(state.controls.nnUseTrend, "Value"));
+    end
+
+    function summaryText = getFeatureSummary(featureFlags)
+        featureNames = {'Temp Error'};
+        if featureFlags.useAmbient
+            featureNames{end + 1} = 'Ambient Temp';
+        end
+        if featureFlags.useTrend
+            featureNames{end + 1} = 'Error Trend';
+        end
+        summaryText = joinTextParts(featureNames, ', ');
+    end
+
     function profile = buildAmbientProfile()
-        if isempty(state.profilePoints)
+        profile = buildAmbientProfileFromPoints(state.profilePoints, char(state.currentProfileName), char(state.profileSource));
+    end
+
+    function profile = buildAmbientProfileFromPoints(rawPoints, profileName, profileSource)
+        if isempty(rawPoints)
             error("Create an ambient profile by loading an example or adding at least two points.");
         end
 
-        [pointTimes, pointTemps] = sanitizeProfilePoints(state.profilePoints);
+        [pointTimes, pointTemps] = sanitizeProfilePoints(rawPoints);
         if numel(pointTimes) < 2
             error("At least two unique time points are required to define an ambient profile.");
         end
@@ -589,8 +845,8 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         profile.temperature = ambientTemperature(:).';
         profile.controlTimes = pointTimes;
         profile.controlTemps = pointTemps;
-        profile.name = char(state.currentProfileName);
-        profile.source = char(state.profileSource);
+        profile.name = profileName;
+        profile.source = profileSource;
     end
 
     function [pointTimes, pointTemps] = sanitizeProfilePoints(rawPoints)
@@ -599,6 +855,88 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         sortedTemps = sortedPoints(:, 2);
         [pointTimes, uniqueIndices] = unique(sortedTimes, "last");
         pointTemps = sortedTemps(uniqueIndices);
+    end
+
+    function trainingProfiles = getTrainingProfiles()
+        trainingProfiles = repmat(struct( ...
+            "timeHours", state.timeHours, ...
+            "temperature", zeros(size(state.timeHours)), ...
+            "controlTimes", [], ...
+            "controlTemps", [], ...
+            "name", "", ...
+            "source", ""), 1, numel(state.exampleLibrary));
+
+        for profileIndex = 1:numel(state.exampleLibrary)
+            exampleProfile = state.exampleLibrary(profileIndex);
+            trainingProfiles(profileIndex) = buildAmbientProfileFromPoints( ...
+                exampleProfile.points, exampleProfile.name, "example");
+        end
+
+        try
+            currentProfile = buildAmbientProfile();
+            trainingProfiles(end + 1) = currentProfile;
+        catch
+            % Keep the built-in library only if the current profile is incomplete.
+        end
+    end
+
+    function [trainingInputs, trainingTargets] = buildNnTrainingDataset(trainingProfiles, params, featureFlags)
+        trainingInputs = [];
+        trainingTargets = [];
+
+        for profileIndex = 1:numel(trainingProfiles)
+            [profileInputs, profileTargets] = collectPidImitationData(trainingProfiles(profileIndex), params, featureFlags);
+            trainingInputs = [trainingInputs; profileInputs]; %#ok<AGROW>
+            trainingTargets = [trainingTargets; profileTargets]; %#ok<AGROW>
+        end
+
+        if isempty(trainingInputs)
+            error("The NN training dataset is empty. Load or define an ambient profile first.");
+        end
+    end
+
+    function [sampleInputs, sampleTargets] = collectPidImitationData(ambientProfile, params, featureFlags)
+        timeHours = ambientProfile.timeHours;
+        dtHours = timeHours(2) - timeHours(1);
+        pointCount = numel(timeHours);
+        indoorTemperature = zeros(pointCount, 1);
+        indoorTemperature(1) = params.initialIndoor;
+        controllerState = struct( ...
+            "integralError", 0, ...
+            "previousError", indoorTemperature(1) - params.setpoint, ...
+            "currentStage", 0);
+
+        sampleInputs = zeros(pointCount, countEnabledFeatures(featureFlags));
+        sampleTargets = zeros(pointCount, 1);
+
+        teacherParams = params;
+        teacherParams.pidModeIndex = 1;
+        teacherParams.pidModeLabel = 'Duty Cycle';
+
+        for index = 1:(pointCount - 1)
+            sampleInputs(index, :) = buildNnFeatureRow( ...
+                indoorTemperature(index), ambientProfile.temperature(index), params.setpoint, ...
+                controllerState.previousError, dtHours, featureFlags);
+
+            [pidCoolingLevel, controllerState] = updatePidControl( ...
+                controllerState, indoorTemperature(index), teacherParams, dtHours);
+            sampleTargets(index) = pidCoolingLevel;
+
+            indoorSlope = params.roomResponseRate * ...
+                (ambientProfile.temperature(index) - indoorTemperature(index)) - ...
+                params.coolingStrength * pidCoolingLevel;
+            indoorTemperature(index + 1) = indoorTemperature(index) + dtHours * indoorSlope;
+        end
+
+        sampleInputs(end, :) = buildNnFeatureRow( ...
+            indoorTemperature(end), ambientProfile.temperature(end), params.setpoint, ...
+            controllerState.previousError, dtHours, featureFlags);
+        [sampleTargets(end), controllerState] = updatePidControl( ...
+            controllerState, indoorTemperature(end), teacherParams, dtHours); %#ok<NASGU>
+    end
+
+    function featureCount = countEnabledFeatures(featureFlags)
+        featureCount = 1 + double(featureFlags.useAmbient) + double(featureFlags.useTrend);
     end
 
     function results = simulateControllers(ambientProfile, params)
@@ -610,6 +948,8 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         thermostatState = nan(size(timeHours));
         pidTemperature = nan(size(timeHours));
         pidCoolingLevel = nan(size(timeHours));
+        nnTemperature = nan(size(timeHours));
+        nnCoolingLevel = nan(size(timeHours));
 
         if params.enableThermostat
             thermostatTemperature(:) = 0;
@@ -632,16 +972,28 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             pidControllerState = struct("integralError", 0, "previousError", 0, "currentStage", 0);
         end
 
+        if params.enableNn
+            nnTemperature(:) = 0;
+            nnCoolingLevel(:) = 0;
+            nnTemperature(1) = params.initialIndoor;
+            nnControllerState = struct("previousError", nnTemperature(1) - params.setpoint);
+            nnModel = state.nnModel;
+        else
+            nnControllerState = struct("previousError", 0);
+            nnModel = createEmptyNnModel();
+        end
+
         for index = 1:(pointCount - 1)
+            ambientTemperature = ambientProfile.temperature(index);
+
             if params.enableThermostat
                 [thermostatCommand, thermostatControllerState] = updateThermostatControl( ...
                     thermostatControllerState, thermostatTemperature(index), params);
                 thermostatState(index) = thermostatCommand;
 
                 thermostatSlope = params.roomResponseRate * ...
-                    (ambientProfile.temperature(index) - thermostatTemperature(index)) - ...
+                    (ambientTemperature - thermostatTemperature(index)) - ...
                     params.coolingStrength * thermostatCommand;
-
                 thermostatTemperature(index + 1) = thermostatTemperature(index) + dtHours * thermostatSlope;
             end
 
@@ -651,23 +1003,39 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
                 pidCoolingLevel(index) = pidOutputLevel;
 
                 pidSlope = params.roomResponseRate * ...
-                    (ambientProfile.temperature(index) - pidTemperature(index)) - ...
+                    (ambientTemperature - pidTemperature(index)) - ...
                     params.coolingStrength * pidOutputLevel;
-
                 pidTemperature(index + 1) = pidTemperature(index) + dtHours * pidSlope;
+            end
+
+            if params.enableNn
+                [nnOutputLevel, nnControllerState] = updateNnControl( ...
+                    nnControllerState, nnTemperature(index), ambientTemperature, params.setpoint, nnModel, dtHours);
+                nnCoolingLevel(index) = nnOutputLevel;
+
+                nnSlope = params.roomResponseRate * ...
+                    (ambientTemperature - nnTemperature(index)) - ...
+                    params.coolingStrength * nnOutputLevel;
+                nnTemperature(index + 1) = nnTemperature(index) + dtHours * nnSlope;
             end
         end
 
         if params.enableThermostat
             [thermostatCommand, thermostatControllerState] = updateThermostatControl( ...
-                thermostatControllerState, thermostatTemperature(end), params);
+                thermostatControllerState, thermostatTemperature(end), params); %#ok<NASGU>
             thermostatState(end) = thermostatCommand;
         end
 
         if params.enablePid
             [pidOutputLevel, pidControllerState] = updatePidControl( ...
-                pidControllerState, pidTemperature(end), params, dtHours);
+                pidControllerState, pidTemperature(end), params, dtHours); %#ok<NASGU>
             pidCoolingLevel(end) = pidOutputLevel;
+        end
+
+        if params.enableNn
+            [nnOutputLevel, nnControllerState] = updateNnControl( ...
+                nnControllerState, nnTemperature(end), ambientProfile.temperature(end), params.setpoint, nnModel, dtHours); %#ok<NASGU>
+            nnCoolingLevel(end) = nnOutputLevel;
         end
 
         results = struct();
@@ -676,18 +1044,27 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         results.setpoint = params.setpoint * ones(size(timeHours));
         results.thermostatEnabled = params.enableThermostat;
         results.pidEnabled = params.enablePid;
+        results.nnEnabled = params.enableNn;
         results.pidModeLabel = params.pidModeLabel;
         results.thermostatTemperature = thermostatTemperature;
         results.thermostatState = thermostatState;
         results.pidTemperature = pidTemperature;
         results.pidCoolingLevel = pidCoolingLevel;
+        results.nnTemperature = nnTemperature;
+        results.nnCoolingLevel = nnCoolingLevel;
         results.thermostatOnTimeHours = computeControllerMetric(params.enableThermostat, sum(thermostatState) * dtHours);
         results.pidActiveHours = computeControllerMetric(params.enablePid, sum(pidCoolingLevel > 0) * dtHours);
         results.pidEquivalentHours = computeControllerMetric(params.enablePid, sum(pidCoolingLevel) * dtHours);
+        results.nnEquivalentHours = computeControllerMetric(params.enableNn, sum(nnCoolingLevel) * dtHours);
         results.thermostatDutyCycle = computeControllerMetric(params.enableThermostat, 100 * mean(thermostatState));
         results.pidDutyCycle = computeControllerMetric(params.enablePid, 100 * mean(pidCoolingLevel));
+        results.nnDutyCycle = computeControllerMetric(params.enableNn, 100 * mean(nnCoolingLevel));
         results.thermostatAverageIndoor = computeControllerMetric(params.enableThermostat, mean(thermostatTemperature));
         results.pidAverageIndoor = computeControllerMetric(params.enablePid, mean(pidTemperature));
+        results.nnAverageIndoor = computeControllerMetric(params.enableNn, mean(nnTemperature));
+        results.nnTrainingLoss = computeControllerMetric(params.enableNn, state.nnModel.loss);
+        results.nnIsStale = params.enableNn && state.nnModel.isStale;
+        results.nnFeatureSummary = char(state.nnModel.featureSummary);
         results.profileName = ambientProfile.name;
     end
 
@@ -775,6 +1152,102 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         controllerState.previousError = errorSignal;
     end
 
+    function [coolingLevel, controllerState] = updateNnControl(controllerState, indoorTemperature, ambientTemperature, setpoint, nnModel, dtHours)
+        featureRow = buildNnFeatureRow( ...
+            indoorTemperature, ambientTemperature, setpoint, controllerState.previousError, dtHours, nnModel.featureFlags);
+        coolingLevel = inferNnCoolingLevel(nnModel, featureRow);
+        controllerState.previousError = indoorTemperature - setpoint;
+    end
+
+    function featureRow = buildNnFeatureRow(indoorTemperature, ambientTemperature, setpoint, previousError, dtHours, featureFlags)
+        errorSignal = indoorTemperature - setpoint;
+        featureRow = errorSignal;
+
+        if featureFlags.useAmbient
+            featureRow(end + 1) = ambientTemperature; %#ok<AGROW>
+        end
+
+        if featureFlags.useTrend
+            errorTrend = (errorSignal - previousError) / dtHours;
+            featureRow(end + 1) = errorTrend; %#ok<AGROW>
+        end
+    end
+
+    function coolingLevel = inferNnCoolingLevel(nnModel, featureRow)
+        normalizedFeature = (featureRow(:).' - nnModel.inputMean) ./ nnModel.inputScale;
+        hiddenVector = tanh(nnModel.W1 * normalizedFeature(:) + nnModel.b1);
+        outputValue = sigmoid(nnModel.W2 * hiddenVector + nnModel.b2);
+        coolingLevel = min(max(outputValue, 0), 1);
+        coolingLevel = double(coolingLevel);
+    end
+
+    function nnModel = trainNeuralNetwork(trainingInputs, trainingTargets, featureFlags, trainingSettings)
+        sampleCount = size(trainingInputs, 1);
+        inputCount = size(trainingInputs, 2);
+
+        inputMean = mean(trainingInputs, 1);
+        inputScale = std(trainingInputs, 0, 1);
+        inputScale(inputScale < 1e-8) = 1;
+        normalizedInputs = (trainingInputs - inputMean) ./ inputScale;
+        targets = trainingTargets(:);
+
+        savedRng = rng;
+        cleanupRng = onCleanup(@() rng(savedRng)); %#ok<NASGU>
+        rng(7, "twister");
+
+        hiddenCount = trainingSettings.hiddenNeurons;
+        W1 = 0.25 * randn(hiddenCount, inputCount);
+        b1 = zeros(hiddenCount, 1);
+        W2 = 0.25 * randn(1, hiddenCount);
+        b2 = 0;
+
+        finalLoss = NaN;
+        learningRate = trainingSettings.learningRate;
+
+        for epoch = 1:trainingSettings.epochs
+            hiddenState = tanh(normalizedInputs * W1.' + ones(sampleCount, 1) * b1.');
+            outputState = sigmoid(hiddenState * W2.' + b2);
+
+            outputError = outputState - targets;
+            finalLoss = mean(outputError .^ 2);
+
+            delta2 = (2 / sampleCount) * outputError .* outputState .* (1 - outputState);
+            gradW2 = delta2.' * hiddenState;
+            gradb2 = sum(delta2, 1);
+
+            delta1 = (delta2 * W2) .* (1 - hiddenState .^ 2);
+            gradW1 = delta1.' * normalizedInputs;
+            gradb1 = sum(delta1, 1).';
+
+            W1 = W1 - learningRate * gradW1;
+            b1 = b1 - learningRate * gradb1;
+            W2 = W2 - learningRate * gradW2;
+            b2 = b2 - learningRate * gradb2;
+        end
+
+        nnModel = struct();
+        nnModel.isReady = true;
+        nnModel.isStale = false;
+        nnModel.loss = finalLoss;
+        nnModel.W1 = W1;
+        nnModel.b1 = b1;
+        nnModel.W2 = W2;
+        nnModel.b2 = b2;
+        nnModel.inputMean = inputMean;
+        nnModel.inputScale = inputScale;
+        nnModel.featureFlags = featureFlags;
+        nnModel.featureSummary = getFeatureSummary(featureFlags);
+        nnModel.teacherLabel = 'PID Duty Cycle';
+        nnModel.hiddenNeurons = trainingSettings.hiddenNeurons;
+        nnModel.learningRate = trainingSettings.learningRate;
+        nnModel.epochs = trainingSettings.epochs;
+    end
+
+    function outputValue = sigmoid(inputValue)
+        inputValue = max(min(inputValue, 40), -40);
+        outputValue = 1 ./ (1 + exp(-inputValue));
+    end
+
     function refreshAmbientPlot()
         cla(state.ambientAxes);
         hold(state.ambientAxes, "on");
@@ -786,7 +1259,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             title(state.ambientAxes, "Ambient Temperature Profile");
             text( ...
                 state.ambientAxes, 12, 85, ...
-                {"Load a profile or click points", "to create a custom ambient curve."}, ...
+                {'Load a profile or click points', 'to create a custom ambient curve.'}, ...
                 "HorizontalAlignment", "center", ...
                 "FontSize", 11, ...
                 "Color", [0.25 0.25 0.25]);
@@ -810,7 +1283,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
             ylim(state.ambientAxes, computeTemperatureLimits(ambientProfile.controlTemps));
             title(state.ambientAxes, sprintf("Ambient Temperature Profile: %s", state.currentProfileName));
-            legend(state.ambientAxes, [lineHandle pointHandle], {"Interpolated Profile", "Control Points"}, ...
+            legend(state.ambientAxes, [lineHandle pointHandle], {'Interpolated Profile', 'Control Points'}, ...
                 "Location", "northwest");
         catch
             sortedPoints = sortrows(state.profilePoints, 1);
@@ -847,19 +1320,18 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(state.resultsAxes, "YColor", state.colors.acState);
             ylim(state.resultsAxes, [-0.05 1.05]);
             yticks(state.resultsAxes, [0 0.5 1]);
-            yticklabels(state.resultsAxes, {"0%", "50%", "100%"});
+            yticklabels(state.resultsAxes, {'0%', '50%', '100%'});
             yyaxis(state.resultsAxes, "left");
             set(state.resultsAxes, "YColor", state.colors.indoor);
             text( ...
                 state.resultsAxes, 12, 80, ...
-                {"Run the simulation to compare", "thermostat and PID responses."}, ...
+                {'Run the simulation to compare', 'thermostat, PID, and NN responses.'}, ...
                 "HorizontalAlignment", "center", ...
                 "FontSize", 11, ...
                 "Color", [0.25 0.25 0.25]);
             return;
         end
 
-        axes(state.resultsAxes);
         yyaxis(state.resultsAxes, "left");
         outdoorHandle = plot( ...
             state.resultsAxes, nan, nan, ...
@@ -877,6 +1349,11 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "-", ...
             "LineWidth", 2.0, ...
             "Color", state.colors.indoor);
+        nnTempHandle = plot( ...
+            state.resultsAxes, nan, nan, ...
+            "-.", ...
+            "LineWidth", 2.0, ...
+            "Color", state.colors.indoor);
         setpointHandle = plot( ...
             state.resultsAxes, nan, nan, ...
             ":", ...
@@ -888,6 +1365,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             [state.lastResults.ambientTemperature(:); ...
              state.lastResults.thermostatTemperature(:); ...
              state.lastResults.pidTemperature(:); ...
+             state.lastResults.nnTemperature(:); ...
              state.lastResults.setpoint(:)]));
 
         yyaxis(state.resultsAxes, "right");
@@ -901,11 +1379,16 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "-", ...
             "LineWidth", 1.6, ...
             "Color", state.colors.acState);
+        nnControlHandle = plot( ...
+            state.resultsAxes, nan, nan, ...
+            "-.", ...
+            "LineWidth", 1.6, ...
+            "Color", state.colors.acState);
         ylabel(state.resultsAxes, "Cooling Level");
         set(state.resultsAxes, "YColor", state.colors.acState);
         ylim(state.resultsAxes, [-0.05 1.05]);
         yticks(state.resultsAxes, [0 0.5 1]);
-        yticklabels(state.resultsAxes, {"0%", "50%", "100%"});
+        yticklabels(state.resultsAxes, {'0%', '50%', '100%'});
 
         xlim(state.resultsAxes, [0 24]);
         xlabel(state.resultsAxes, "Time (hours)");
@@ -921,14 +1404,21 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(pidControlHandle, "Visible", "off");
         end
 
+        if ~state.lastResults.nnEnabled
+            set(nnTempHandle, "Visible", "off");
+            set(nnControlHandle, "Visible", "off");
+        end
+
         [legendHandles, legendLabels] = buildResultLegend( ...
-            outdoorHandle, thermostatTempHandle, pidTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle);
+            outdoorHandle, thermostatTempHandle, pidTempHandle, nnTempHandle, ...
+            setpointHandle, thermostatControlHandle, pidControlHandle, nnControlHandle);
         legend(state.resultsAxes, legendHandles, legendLabels, "Location", "northwest");
         grid(state.resultsAxes, "on");
 
         if get(state.controls.animateCheckbox, "Value")
             animateResultsPlot( ...
-                outdoorHandle, thermostatTempHandle, pidTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle);
+                outdoorHandle, thermostatTempHandle, pidTempHandle, nnTempHandle, ...
+                setpointHandle, thermostatControlHandle, pidControlHandle, nnControlHandle);
         else
             set(outdoorHandle, ...
                 "XData", state.lastResults.timeHours, ...
@@ -939,6 +1429,9 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(pidTempHandle, ...
                 "XData", state.lastResults.timeHours, ...
                 "YData", state.lastResults.pidTemperature);
+            set(nnTempHandle, ...
+                "XData", state.lastResults.timeHours, ...
+                "YData", state.lastResults.nnTemperature);
             set(setpointHandle, ...
                 "XData", state.lastResults.timeHours, ...
                 "YData", state.lastResults.setpoint);
@@ -948,6 +1441,9 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(pidControlHandle, ...
                 "XData", state.lastResults.timeHours, ...
                 "YData", state.lastResults.pidCoolingLevel);
+            set(nnControlHandle, ...
+                "XData", state.lastResults.timeHours, ...
+                "YData", state.lastResults.nnCoolingLevel);
         end
 
         hold(state.resultsAxes, "off");
@@ -957,24 +1453,25 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         if isempty(state.lastResults)
             set(state.controls.thermostatStatsBox, "String", getEmptyThermostatStatsText());
             set(state.controls.pidStatsBox, "String", getEmptyPidStatsText());
+            refreshNnPanel();
             return;
         end
 
         if state.lastResults.thermostatEnabled
             thermostatLines = { ...
-                sprintf("Thermostat Runtime: %.2f hr", state.lastResults.thermostatOnTimeHours); ...
-                sprintf("Thermostat Duty: %.0f %%", state.lastResults.thermostatDutyCycle); ...
-                sprintf("Thermostat Avg Temp: %.1f degF", state.lastResults.thermostatAverageIndoor)};
+                sprintf("Thermo Runtime: %.2f hr", state.lastResults.thermostatOnTimeHours); ...
+                sprintf("Thermo Duty: %.0f %%", state.lastResults.thermostatDutyCycle); ...
+                sprintf("Thermo Avg Temp: %.1f degF", state.lastResults.thermostatAverageIndoor)};
         else
-            thermostatLines = {"Thermostat: Off"};
+            thermostatLines = {'Thermostat: Off'};
         end
 
         if state.lastResults.pidEnabled
-            if strcmp(state.lastResults.pidModeLabel, "Duty Cycle")
-                pidRuntimeLabel = "PID Eqv Runtime";
+            if strcmp(char(state.lastResults.pidModeLabel), 'Duty Cycle')
+                pidRuntimeLabel = 'PID Eqv Runtime';
                 pidRuntimeValue = state.lastResults.pidEquivalentHours;
             else
-                pidRuntimeLabel = "PID Active Runtime";
+                pidRuntimeLabel = 'PID Active Run';
                 pidRuntimeValue = state.lastResults.pidActiveHours;
             end
 
@@ -984,14 +1481,66 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
                 sprintf("PID Duty: %.0f %%", state.lastResults.pidDutyCycle); ...
                 sprintf("PID Avg Temp: %.1f degF", state.lastResults.pidAverageIndoor)};
         else
-            pidLines = {"PID: Off"};
+            pidLines = {'PID: Off'};
         end
 
         set(state.controls.thermostatStatsBox, "String", thermostatLines);
         set(state.controls.pidStatsBox, "String", pidLines);
+        refreshNnPanel();
     end
 
-    function animateResultsPlot(outdoorHandle, thermostatTempHandle, pidTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle)
+    function refreshNnPanel()
+        currentFeatureSummary = getFeatureSummary(readNnFeatureFlagsFromUi());
+
+        if state.nnModel.isReady
+            if state.nnModel.isStale
+                modelStatus = 'Stale';
+            else
+                modelStatus = 'Ready';
+            end
+            trainingLossText = sprintf("%.5f", state.nnModel.loss);
+            modelFeatureSummary = char(state.nnModel.featureSummary);
+        else
+            modelStatus = 'Untrained';
+            trainingLossText = '--';
+            modelFeatureSummary = currentFeatureSummary;
+        end
+
+        summaryLines = { ...
+            sprintf("Training Status: %s", modelStatus); ...
+            sprintf("Training Loss: %s", trainingLossText); ...
+            sprintf("Model Features: %s", modelFeatureSummary); ...
+            sprintf("Current Features: %s", currentFeatureSummary); ...
+            'Teacher: PID Duty Cycle'};
+        set(state.controls.nnSummaryBox, "String", summaryLines);
+
+        if isempty(state.lastResults) || ~isfield(state.lastResults, "nnEnabled")
+            nnLines = getEmptyNnStatsText();
+        elseif state.lastResults.nnEnabled
+            if state.lastResults.nnIsStale
+                runtimeStatus = 'Stale';
+            else
+                runtimeStatus = 'Ready';
+            end
+            nnLines = { ...
+                sprintf("NN Eqv Runtime: %.2f hr", state.lastResults.nnEquivalentHours); ...
+                sprintf("NN Duty: %.0f %%", state.lastResults.nnDutyCycle); ...
+                sprintf("NN Avg Temp: %.1f degF", state.lastResults.nnAverageIndoor); ...
+                sprintf("Training Loss: %.5f", state.lastResults.nnTrainingLoss); ...
+                sprintf("Model Status: %s", runtimeStatus)};
+        else
+            nnLines = { ...
+                'NN: Off'; ...
+                'NN Duty: -- %'; ...
+                'NN Avg Temp: -- degF'; ...
+                sprintf("Training Loss: %s", trainingLossText); ...
+                sprintf("Model Status: %s", modelStatus)};
+        end
+
+        set(state.controls.nnStatsBox, "String", nnLines);
+    end
+
+    function animateResultsPlot(outdoorHandle, thermostatTempHandle, pidTempHandle, nnTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle, nnControlHandle)
         totalPoints = numel(state.lastResults.timeHours);
         frameCount = min(totalPoints, 60);
         frameIndices = unique(round(linspace(1, totalPoints, frameCount)));
@@ -1009,6 +1558,9 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(pidTempHandle, ...
                 "XData", state.lastResults.timeHours(1:pointIndex), ...
                 "YData", state.lastResults.pidTemperature(1:pointIndex));
+            set(nnTempHandle, ...
+                "XData", state.lastResults.timeHours(1:pointIndex), ...
+                "YData", state.lastResults.nnTemperature(1:pointIndex));
             set(setpointHandle, ...
                 "XData", state.lastResults.timeHours(1:pointIndex), ...
                 "YData", state.lastResults.setpoint(1:pointIndex));
@@ -1018,6 +1570,9 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             set(pidControlHandle, ...
                 "XData", state.lastResults.timeHours(1:pointIndex), ...
                 "YData", state.lastResults.pidCoolingLevel(1:pointIndex));
+            set(nnControlHandle, ...
+                "XData", state.lastResults.timeHours(1:pointIndex), ...
+                "YData", state.lastResults.nnCoolingLevel(1:pointIndex));
 
             drawnow;
             pause(pauseTime);
@@ -1039,17 +1594,35 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
 
     function emptyText = getEmptyThermostatStatsText()
         emptyText = { ...
-            "Thermostat Runtime: -- hr", ...
-            "Thermostat Duty: -- %", ...
-            "Thermostat Avg Temp: -- degF"};
+            'Thermo Runtime: -- hr', ...
+            'Thermo Duty: -- %', ...
+            'Thermo Avg Temp: -- degF'};
     end
 
     function emptyText = getEmptyPidStatsText()
         emptyText = { ...
-            "PID Mode: --", ...
-            "PID Eqv Runtime: -- hr", ...
-            "PID Duty: -- %", ...
-            "PID Avg Temp: -- degF"};
+            'PID Mode: --', ...
+            'PID Eqv Runtime: -- hr', ...
+            'PID Duty: -- %', ...
+            'PID Avg Temp: -- degF'};
+    end
+
+    function emptyText = getEmptyNnSummaryText()
+        emptyText = { ...
+            'Training Status: Untrained', ...
+            'Training Loss: --', ...
+            'Model Features: Temp Error', ...
+            'Current Features: Temp Error', ...
+            'Teacher: PID Duty Cycle'};
+    end
+
+    function emptyText = getEmptyNnStatsText()
+        emptyText = { ...
+            'NN Eqv Runtime: -- hr', ...
+            'NN Duty: -- %', ...
+            'NN Avg Temp: -- degF', ...
+            'Training Loss: --', ...
+            'Model Status: Untrained'};
     end
 
     function metricValue = computeControllerMetric(isEnabled, rawValue)
@@ -1060,31 +1633,78 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
         end
     end
 
-    function [legendHandles, legendLabels] = buildResultLegend(outdoorHandle, thermostatTempHandle, pidTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle)
+    function [legendHandles, legendLabels] = buildResultLegend(outdoorHandle, thermostatTempHandle, pidTempHandle, nnTempHandle, setpointHandle, thermostatControlHandle, pidControlHandle, nnControlHandle)
         legendHandles = outdoorHandle;
-        legendLabels = {"Outdoor"};
+        legendLabels = {'Outdoor'};
 
         if state.lastResults.thermostatEnabled
             legendHandles(end + 1) = thermostatTempHandle;
-            legendLabels{end + 1} = "Thermostat Indoor";
+            legendLabels{end + 1} = 'Thermostat Indoor';
         end
 
         if state.lastResults.pidEnabled
             legendHandles(end + 1) = pidTempHandle;
-            legendLabels{end + 1} = "PID Indoor";
+            legendLabels{end + 1} = 'PID Indoor';
+        end
+
+        if state.lastResults.nnEnabled
+            legendHandles(end + 1) = nnTempHandle;
+            legendLabels{end + 1} = 'NN Indoor';
         end
 
         legendHandles(end + 1) = setpointHandle;
-        legendLabels{end + 1} = "Setpoint";
+        legendLabels{end + 1} = 'Setpoint';
 
         if state.lastResults.thermostatEnabled
             legendHandles(end + 1) = thermostatControlHandle;
-            legendLabels{end + 1} = "Thermostat AC";
+            legendLabels{end + 1} = 'Thermostat AC';
         end
 
         if state.lastResults.pidEnabled
             legendHandles(end + 1) = pidControlHandle;
-            legendLabels{end + 1} = "PID Cooling";
+            legendLabels{end + 1} = 'PID Cooling';
+        end
+
+        if state.lastResults.nnEnabled
+            legendHandles(end + 1) = nnControlHandle;
+            legendLabels{end + 1} = 'NN Cooling';
+        end
+    end
+
+    function summaryText = buildSimulationSummary(results)
+        summaryParts = {};
+        if results.thermostatEnabled
+            summaryParts{end + 1} = sprintf('Thermostat avg %.1f degF', results.thermostatAverageIndoor); %#ok<AGROW>
+        end
+        if results.pidEnabled
+            summaryParts{end + 1} = sprintf('PID avg %.1f degF', results.pidAverageIndoor); %#ok<AGROW>
+        end
+        if results.nnEnabled
+            summaryParts{end + 1} = sprintf('NN avg %.1f degF', results.nnAverageIndoor); %#ok<AGROW>
+        end
+
+        if isempty(summaryParts)
+            summaryText = 'Simulation completed.';
+        else
+            summaryText = sprintf('Simulation complete for %s. %s.', ...
+                char(results.profileName), joinTextParts(summaryParts, ', '));
+        end
+    end
+
+    function joinedText = joinTextParts(textParts, delimiter)
+        if isempty(textParts)
+            joinedText = '';
+            return;
+        end
+
+        normalizedParts = cell(size(textParts));
+        for partIndex = 1:numel(textParts)
+            normalizedParts{partIndex} = char(textParts{partIndex});
+        end
+
+        joinedText = normalizedParts{1};
+        for partIndex = 2:numel(normalizedParts)
+            joinedText = [joinedText delimiter normalizedParts{partIndex}]; %#ok<AGROW>
         end
     end
 
@@ -1107,8 +1727,36 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             "Color", [1 1 1]);
     end
 
+    function markNnModelStale(messageText)
+        if state.nnModel.isReady
+            state.nnModel.isStale = true;
+            setStatus("nn model stale");
+            logMessage(messageText);
+        end
+    end
+
+    function nnModel = createEmptyNnModel()
+        featureFlags = struct("useError", true, "useAmbient", false, "useTrend", false);
+        nnModel = struct();
+        nnModel.isReady = false;
+        nnModel.isStale = false;
+        nnModel.loss = NaN;
+        nnModel.W1 = [];
+        nnModel.b1 = [];
+        nnModel.W2 = [];
+        nnModel.b2 = 0;
+        nnModel.inputMean = [];
+        nnModel.inputScale = [];
+        nnModel.featureFlags = featureFlags;
+        nnModel.featureSummary = 'Temp Error';
+        nnModel.teacherLabel = 'PID Duty Cycle';
+        nnModel.hiddenNeurons = NaN;
+        nnModel.learningRate = NaN;
+        nnModel.epochs = NaN;
+    end
+
     function exampleLibrary = getExampleLibrary()
-        exampleLibrary(1).name = "Summer Warm-Up";
+        exampleLibrary(1).name = 'Summer Warm-Up';
         exampleLibrary(1).points = [ ...
             0 72; ...
             4 70; ...
@@ -1119,7 +1767,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             21 84; ...
             24 76];
 
-        exampleLibrary(2).name = "Heat-Wave Spike";
+        exampleLibrary(2).name = 'Heat-Wave Spike';
         exampleLibrary(2).points = [ ...
             0 75; ...
             5 73; ...
@@ -1131,7 +1779,7 @@ logMessage("App ready. Load an example or enable Select Points to sketch a custo
             21 82; ...
             24 78];
 
-        exampleLibrary(3).name = "Day-Night Cycle";
+        exampleLibrary(3).name = 'Day-Night Cycle';
         exampleLibrary(3).points = [ ...
             0 69; ...
             3 66; ...

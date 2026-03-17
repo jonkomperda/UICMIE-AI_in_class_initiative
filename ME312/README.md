@@ -1,27 +1,31 @@
 # HVAC PID / Neural Network Control Demo
 ### *by Jon Komperda, PhD*
 
-`hvac_pid_nn_control_demo.m` is an interactive MATLAB teaching app for introductory HVAC temperature control. The current version compares two controllers on the same cooling-only room model:
+`hvac_pid_nn_control_demo.m` is an interactive MATLAB teaching app for introductory HVAC temperature control. The current version compares three controllers on the same cooling-only room model:
 
 - a basic on/off thermostat with hysteresis
-- a cooling-only PID controller with tunable `Kp`, `Ki`, and `Kd`
+- a PID controller with duty-cycle and two-stage actuation modes
+- a neural-network controller trained to imitate the PID duty-cycle response
 
-The app still keeps the broader `pid_nn` framing because the long-term goal is to compare classical control ideas with future neural-network-based control extensions.
+The app keeps the broader `pid_nn` framing so students can compare simple rule-based control, classical feedback control, and an early AI-based controller in the same interface.
 
 ## Running the demo
 
-Run the file from the `ME312` folder or add that folder to your MATLAB path first.
+Run the file from the `ME312` folder or add that folder to your MATLAB path first:
+
+```matlab
+hvac_pid_nn_control_demo
+```
 
 ## What the app does
 
 At a high level, the workflow is:
 
 1. Load a built-in ambient temperature profile or click points to define a custom profile over a 24-hour window.
-2. Set the room-model, basic thermostat, and PID parameters.
-3. Run the HVAC simulation.
-4. Compare the thermostat and PID temperature responses, controller effort, and summary metrics.
-
-This makes the app useful for discussing how a simple hysteresis controller differs from a continuous PID controller under the same outdoor disturbance.
+2. Set the room-model, thermostat, and PID parameters.
+3. Train the neural-network controller if you want to include it in the comparison.
+4. Run the HVAC simulation.
+5. Compare thermostat, PID, and NN temperature responses, cooling effort, and summary metrics.
 
 ## Current scope
 
@@ -33,32 +37,64 @@ The current version includes:
   - `Day-Night Cycle`
 - manual point-based ambient profile creation by clicking in the left plot
 - a simple first-order cooling-room model
-- a shared setpoint used by both controllers
-- a basic thermostat with hysteresis (deadband)
+- a shared setpoint used by all controllers
+- independent enable toggles for:
+  - basic thermostat
+  - PID controller
+  - neural-network controller
 - a PID controller with two selectable actuation modes:
   - `Duty Cycle`
     continuous PWM-like cooling between `0` and `1`
   - `Two Stage`
     staged cooling levels at `0`, `0.5`, and `1`
+- a neural-network controller that:
+  - is implemented in plain MATLAB without Neural Network Toolbox / Deep Learning Toolbox
+  - uses a one-hidden-layer multilayer perceptron
+  - learns from PID duty-cycle training targets generated from simulated HVAC runs
+  - outputs a continuous cooling level between `0` and `1`
 - a right-side comparison plot showing:
   - outdoor temperature
   - thermostat indoor temperature
   - PID indoor temperature
+  - NN indoor temperature
   - setpoint
-  - thermostat control output
+  - thermostat AC state
   - PID cooling level
+  - NN cooling level
 - an optional 3-second animation of the comparison plot
-- controller enable checkboxes so the thermostat and PID can be run independently
-- a run-statistics summary inside the control panel comparing controller runtime, duty cycle, and average indoor temperature
+- left-panel run statistics for thermostat and PID
+- right-panel training summary and NN run statistics
+
+## UI layout
+
+The app is split into four main regions:
+
+- `Controls` panel on the left
+  - ambient-profile tools
+  - room-model controls
+  - thermostat controls
+  - PID controls
+  - run button and animation toggle
+  - thermostat and PID statistics
+  - shared status line at the bottom
+- `Ambient Temperature Profile` plot
+  - shows the outdoor temperature profile that drives the room model
+- `Controller Comparison` plot
+  - overlays all enabled controller temperature and cooling traces
+- `NN Controls` panel on the right
+  - NN enable toggle
+  - `Train NN` button
+  - feature-selection checkboxes
+  - NN hyperparameters
+  - training summary
+  - NN run statistics
 
 ## Inputs you can change
-
-The control panel is divided into three sections:
 
 ### Room Model
 
 - `Initial Indoor (degF)`
-  Starting room temperature at the beginning of the day.
+  Starting room temperature at the beginning of the simulation.
 
 - `Room Response (1/hr)`
   A simple thermal-response coefficient that pulls the indoor temperature toward the ambient temperature.
@@ -72,7 +108,7 @@ The control panel is divided into three sections:
   Turns the thermostat comparison path on or off.
 
 - `Setpoint (degF)`
-  Shared indoor target temperature for both controllers.
+  Shared indoor target temperature for all controllers.
 
 - `Deadband (degF)`
   Thermostat hysteresis width. Larger values reduce switching chatter.
@@ -93,6 +129,32 @@ The control panel is divided into three sections:
 
 - `PID Mode`
   Selects either continuous duty-cycle cooling or two-stage cooling.
+
+### NN Controls
+
+- `Enable`
+  Turns the NN comparison path on or off.
+
+- `Train NN`
+  Builds a training dataset from simulated PID duty-cycle runs and fits the NN weights.
+
+- `Temp Error (required)`
+  Always included as an NN input feature.
+
+- `Ambient Temp`
+  Optional NN input feature.
+
+- `Error Trend`
+  Optional NN input feature.
+
+- `Hidden Neurons`
+  Number of hidden-layer neurons in the NN.
+
+- `Learning Rate`
+  Batch-gradient-descent learning rate.
+
+- `Epochs`
+  Number of training passes through the dataset.
 
 ## Simple thermal model
 
@@ -134,9 +196,7 @@ The PID branch uses:
   - `Duty Cycle`
     applies continuous cooling between `0` and `1`
   - `Two Stage`
-    maps the PID demand to stepped cooling levels at `0`, `0.5`, and `1` using lower and higher demand bands so stage 1 engages earlier and stage 2 engages only at stronger cooling demand
-
-This creates a classroom-friendly comparison between rule-based switching and continuous feedback control.
+    maps the PID demand to stepped cooling levels at `0`, `0.5`, and `1`
 
 The PID governing equation is based on the temperature error
 $e(t)=T_{\mathrm{in}}(t)-T_{\mathrm{set}}$,
@@ -158,6 +218,65 @@ $$
 
 where $\mathrm{clip}(x,0,1)$ limits the command to the interval $[0,1]$.
 
+### Neural-network controller
+
+The current NN controller is a supervised approximation of the PID duty-cycle controller:
+
+- the NN is trained from simulated HVAC runs rather than external data files
+- the teacher target is the PID duty-cycle cooling level
+- the model is a one-hidden-layer multilayer perceptron
+- hidden activation uses `tanh`
+- output activation uses a sigmoid so the output stays between `0` and `1`
+- the network input always includes temperature error and can optionally include:
+  - ambient temperature
+  - error trend
+
+At training time, the app:
+
+1. Simulates PID duty-cycle control on all built-in ambient profiles.
+2. Adds the currently active ambient profile snapshot to the training set when available.
+3. Collects feature vectors and PID cooling targets.
+4. Normalizes the inputs.
+5. Trains the NN with batch gradient descent in plain MATLAB.
+
+After training, the NN can be enabled as a third controller in the comparison plot. If the room-model parameters, setpoint, PID gains, or NN feature/hyperparameter settings change, the app marks the NN model as stale but still allows it to run.
+
+## Training summary and run statistics
+
+The NN panel reports:
+
+- `Training Status`
+  `Untrained`, `Ready`, or `Stale`
+
+- `Training Loss`
+  Final mean-squared error from NN training
+
+- `Model Features`
+  Feature set stored with the trained model
+
+- `Current Features`
+  Feature set currently selected in the UI
+
+- `Teacher`
+  Currently fixed as `PID Duty Cycle`
+
+The NN run statistics report:
+
+- `NN Eqv Runtime`
+  Equivalent runtime computed from the continuous cooling command
+
+- `NN Duty`
+  Mean cooling level expressed as a percentage
+
+- `NN Avg Temp`
+  Average indoor temperature over the day
+
+- `Training Loss`
+  The stored training loss for the currently loaded NN model
+
+- `Model Status`
+  Whether the model is `Ready`, `Stale`, or `Untrained`
+
 ## Future plans
 
 This demo is designed to grow further. Planned future directions include:
@@ -170,14 +289,16 @@ This demo is designed to grow further. Planned future directions include:
   - `stage2OnThreshold = 0.60`
   - `stage2OffThreshold = 0.40`
 
-- `Neural-network extension`
-  Add a neural-network-based temperature-control component, such as a learned room-response predictor or a data-driven supervisory controller.
+- `Neural-network direct objective`
+  Replace PID-imitation training with a more ambitious NN training objective that directly minimizes temperature-tracking error instead of copying PID output.
+
+- `NN staged-output option`
+  Add a user-selectable NN actuator mode so the NN can run either:
+  - continuous duty-cycle output in `0..1`
+  - staged output at `0`, `0.5`, and `1`
+
+- `Expose staged-controller hysteresis details`
+  Expose the two-stage decision logic to the user later, including stage hysteresis, second-stage drop-back behavior, and anti-chatter tuning.
 
 - `Classical vs AI comparison`
-  Compare thermostat control, PID control, and neural-network-assisted control on the same HVAC example.
-
-- `Expanded teaching workflow`
-  Use the same app to discuss the tradeoffs among:
-  - simple rule-based control
-  - classical feedback control
-  - data-driven / AI-based control
+  Continue expanding the side-by-side comparison of thermostat, PID, and neural-network control on the same HVAC example.
