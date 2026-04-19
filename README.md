@@ -8,6 +8,21 @@ The overall goal is to give students and instructors practical, concrete example
 
 ## Repository overview
 
+### `ME312`
+
+`ME312` contains a MATLAB HVAC control demo that compares three ways of regulating indoor temperature on the same simplified room model: a basic thermostat with hysteresis, a PID controller, and a small neural-network controller trained to imitate the PID duty-cycle response.
+
+This folder shows how an introductory thermal-systems and controls topic can be extended into an AI-oriented workflow:
+
+- a user can load or sketch a 24-hour outdoor temperature profile
+- a first-order room model simulates indoor temperature response
+- a thermostat provides a simple rule-based control baseline
+- a PID controller provides a classical feedback-control comparison
+- a neural network is trained in plain MATLAB to approximate the PID controller
+- plots and summary metrics let students compare temperature tracking and cooling effort across all three approaches
+
+This example connects HVAC system modeling and feedback control concepts to data-driven control approximation in a way that is accessible for classroom demonstration and student experimentation.
+
 ### `ME320`
 
 `ME320` contains a MATLAB app for mechanism synthesis using a genetic algorithm. The example focuses on four-bar and multi-bar linkage path generation, where a target path is specified and the solver searches for mechanism parameters that reproduce it as closely as possible.
